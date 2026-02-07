@@ -5,7 +5,7 @@
 //  - No shell: true — prevents shell injection attacks
 //  - Audit trail integration
 // ============================================================
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { Transform } from 'stream';
 import chalk from 'chalk';
 import { classifyError } from '../errors.js';
@@ -93,15 +93,27 @@ export class BaseProvider {
     this.promptMode = options.promptMode || 'args';
   }
 
-  // Check if the underlying CLI is installed
-  // On Windows, npm globals are .cmd wrappers — spawn needs shell to resolve them
   async isInstalled() {
     return new Promise((resolve) => {
       const isWin = process.platform === 'win32';
-      const proc = spawn(this.command, ['--version'], {
+      let cmd = this.command;
+
+      // On Windows, npm globals are .cmd wrappers.
+      // Resolve the actual path to avoid shell: true + args (DEP0190).
+      if (isWin) {
+        try {
+          const resolved = execSync(`where ${this.command}`, {
+            stdio: 'pipe', encoding: 'utf8', timeout: 5000,
+          }).trim().split(/\r?\n/)[0];
+          if (resolved) cmd = resolved;
+        } catch {
+          // Command not found — will fail below
+        }
+      }
+
+      const proc = spawn(cmd, ['--version'], {
         stdio: 'pipe',
         timeout: 5000,
-        ...(isWin ? { shell: true } : {}),
       });
       proc.on('close', (code) => resolve(code === 0));
       proc.on('error', () => resolve(false));

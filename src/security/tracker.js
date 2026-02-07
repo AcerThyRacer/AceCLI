@@ -4,6 +4,8 @@
 //  Deduplicated: all static Sets contain zero duplicate entries
 // ============================================================
 import chalk from 'chalk';
+import fs from 'fs';
+import path from 'path';
 
 // ── Comprehensive Tracker Domain Blocklist (1068+ unique) ──
 const TRACKER_DOMAINS = new Set([
@@ -794,6 +796,10 @@ export class TrackerBlocker {
     this.sanitizeEnv = options.sanitizeEnv !== false;
     this.detectFingerprinting = options.detectFingerprinting !== false;
 
+    // Custom Allow/Block lists
+    this.allowDomains = new Set(options.allowDomains || []);
+    this.allowParams = new Set(options.allowParams || []);
+
     this.blockedCount = 0;
     this.strippedUrls = 0;
     this.blockedHeaders = 0;
@@ -807,35 +813,11 @@ export class TrackerBlocker {
     // LRU-bounded domain cache (max 1000 entries)
     this._domainCache = new Map();
     this._domainCacheMax = 1000;
-
-    // Lazy-compiled regex for tracking params
-    this._paramPattern = null;
-
-    // Compiled combined regex for domain suffix matching (built once)
-    this._domainSuffixRegex = null;
   }
 
-  // Lazy-compile tracking params regex on first use
-  _getParamPattern() {
-    if (!this._paramPattern) {
-      this._paramPattern = new RegExp(
-        Array.from(TRACKING_PARAMS).map(p => `${p}=[^&]*`).join('|'),
-        'gi'
-      );
-    }
-    return this._paramPattern;
-  }
-
-  // Compiled domain suffix regex for fast batch matching
-  _getDomainSuffixRegex() {
-    if (!this._domainSuffixRegex) {
-      // Build a regex that matches any tracker domain as a suffix
-      const escaped = Array.from(TRACKER_DOMAINS).map(d => d.replace(/\./g, '\\.'));
-      // Match domain ending with any tracker domain (preceded by . or start of string)
-      this._domainSuffixRegex = new RegExp(`(?:^|\\.)(?:${escaped.join('|')})$`, 'i');
-    }
-    return this._domainSuffixRegex;
-  }
+// Unused methods removed
+  _getParamPattern() { return null; }
+  _getDomainSuffixRegex() { return null; }
 
   // ── Domain Blocking ─────────────────────────────────────────
   isTrackerDomain(domain) {
@@ -849,12 +831,38 @@ export class TrackerBlocker {
     // Normalize domain
     const normalized = domain.toLowerCase().trim();
 
-    // Direct match (O(1) in Set)
-    let isTracker = TRACKER_DOMAINS.has(normalized);
+    // Check allowlist (exact + suffix)
+    // We check allowlist first so users can unblock specific subdomains
+    // even if the parent is blocked, OR unblock a whole domain.
+    // For allowlist, we perform the same hierarchical check.
+    let isAllowed = false;
+    const parts = normalized.split('.');
+    
+    // Optimization: Don't check TLDs or root
+    const minParts = 2; 
 
-    // Fast suffix match via compiled regex if no direct match
-    if (!isTracker) {
-      isTracker = this._getDomainSuffixRegex().test(normalized);
+    // Check Allowlist
+    for (let i = 0; i <= parts.length - minParts; i++) {
+        const sub = parts.slice(i).join('.');
+        if (this.allowDomains.has(sub)) {
+            isAllowed = true;
+            break;
+        }
+    }
+    
+    if (isAllowed) {
+        this._domainCache.set(domain, false);
+        return false;
+    }
+
+    // Check Blocklist (Hierarchical)
+    let isTracker = false;
+    for (let i = 0; i <= parts.length - minParts; i++) {
+        const sub = parts.slice(i).join('.');
+        if (TRACKER_DOMAINS.has(sub)) {
+            isTracker = true;
+            break;
+        }
     }
 
     // LRU eviction if cache is full
@@ -871,27 +879,45 @@ export class TrackerBlocker {
   // ── URL Tracking Parameter Stripping ───────────────────────
   stripTrackingParams(url) {
     if (!this.enabled || !this.stripParams) return url;
+    if (!url.includes('?')) return url; // Fast exit
 
     try {
       const urlObj = new URL(url);
-      const originalSearch = urlObj.search;
-
-      if (!originalSearch) return url;
-
       const params = urlObj.searchParams;
       let modified = false;
 
+      // Iterate over the keys in the URL (usually few)
       for (const param of Array.from(params.keys())) {
         const lowerParam = param.toLowerCase();
-        // Check if param is a tracking parameter
-        for (const trackerParam of TRACKING_PARAMS) {
-          if (lowerParam === trackerParam.toLowerCase() ||
-            lowerParam.startsWith(trackerParam.toLowerCase() + '_') ||
-            lowerParam.startsWith(trackerParam.toLowerCase() + '-')) {
-            params.delete(param);
-            modified = true;
-            break;
-          }
+        
+        // 1. Check Allowlist
+        if (this.allowParams.has(lowerParam)) continue;
+
+        let shouldRemove = false;
+
+        // 2. Exact match check
+        if (TRACKING_PARAMS.has(lowerParam)) {
+            shouldRemove = true;
+        } else {
+            // 3. Prefix match check (Optimized)
+            // Check if param matches "prefix_" or "prefix-" where prefix is in TRACKING_PARAMS
+            // We split by delimiters and check the first part.
+            // e.g. "utm_source" -> ["utm", "source"] -> check "utm"
+            const delimiters = ['_', '-'];
+            for (const delim of delimiters) {
+                if (lowerParam.includes(delim)) {
+                    const prefix = lowerParam.split(delim)[0];
+                    if (TRACKING_PARAMS.has(prefix)) {
+                        shouldRemove = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (shouldRemove) {
+          params.delete(param);
+          modified = true;
         }
       }
 
@@ -1040,6 +1066,40 @@ export class TrackerBlocker {
     this.blockHeaders = options.blockHeaders ?? this.blockHeaders;
     this.sanitizeEnv = options.sanitizeEnv ?? this.sanitizeEnv;
     this.detectFingerprinting = options.detectFingerprinting ?? this.detectFingerprinting;
+    
+    if (options.allowDomains) {
+        this.allowDomains = new Set(options.allowDomains);
+        this._domainCache.clear(); // Clear cache as allowlist changed
+    }
+    if (options.allowParams) {
+        this.allowParams = new Set(options.allowParams);
+    }
+  }
+
+  // ── Load Custom Blocklist ────────────────────────────────────
+  loadBlocklist(filePath) {
+      try {
+          const content = fs.readFileSync(path.resolve(filePath), 'utf8');
+          const data = JSON.parse(content);
+          
+          if (data.domains && Array.isArray(data.domains)) {
+              data.domains.forEach(d => TRACKER_DOMAINS.add(d.toLowerCase()));
+          }
+          if (data.params && Array.isArray(data.params)) {
+              data.params.forEach(p => TRACKING_PARAMS.add(p));
+          }
+          if (data.headers && Array.isArray(data.headers)) {
+              data.headers.forEach(h => TRACKING_HEADERS.add(h.toLowerCase()));
+          }
+          if (data.envVars && Array.isArray(data.envVars)) {
+              data.envVars.forEach(e => TRACKER_ENV_VARS.add(e));
+          }
+          
+          return true;
+      } catch (err) {
+          console.error(chalk.red(`Failed to load blocklist from ${filePath}: ${err.message}`));
+          return false;
+      }
   }
 
   // ── Export blocklist (for external tools) ───────────────────

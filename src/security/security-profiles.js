@@ -42,6 +42,14 @@ export const PROFILES = {
                 ephemeral: true,
                 encrypted: true,
             },
+            mfa: {
+                enabled: true,
+            },
+            integrity: {
+                enabled: true,
+                autoBaseline: true,
+                checkOnLaunch: true,
+            },
         },
     },
 
@@ -83,6 +91,14 @@ export const PROFILES = {
                 ephemeral: false,
                 encrypted: true,
             },
+            mfa: {
+                enabled: false,
+            },
+            integrity: {
+                enabled: true,
+                autoBaseline: true,
+                checkOnLaunch: true,
+            },
         },
     },
 
@@ -123,6 +139,14 @@ export const PROFILES = {
                 enabled: true,
                 ephemeral: false,
                 encrypted: true,
+            },
+            mfa: {
+                enabled: false,
+            },
+            integrity: {
+                enabled: false,
+                autoBaseline: false,
+                checkOnLaunch: false,
             },
         },
     },

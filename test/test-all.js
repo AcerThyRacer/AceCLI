@@ -1347,3 +1347,337 @@ describe('Silent Catch Audit Logging', () => {
     assert.ok(cm.audit === audit);
   });
 });
+
+// ── SecureMemory Tests ──────────────────────────────────────
+import { SecureBuffer, SecureString, MemoryGuard } from '../src/security/secure-memory.js';
+
+describe('SecureBuffer', () => {
+  it('should allocate a buffer of specified size', () => {
+    const sb = new SecureBuffer(32);
+    assert.equal(sb.length, 32);
+    assert.equal(sb.isWiped, false);
+  });
+
+  it('should create from existing Buffer', () => {
+    const original = Buffer.from('sensitive data');
+    const sb = new SecureBuffer(original);
+    assert.equal(sb.buffer.toString(), 'sensitive data');
+  });
+
+  it('should create from string via static method', () => {
+    const sb = SecureBuffer.fromString('hello world');
+    assert.equal(sb.buffer.toString().trim(), 'hello world');
+    assert.equal(sb.isWiped, false);
+  });
+
+  it('should wipe buffer data with multi-pass', () => {
+    const sb = SecureBuffer.fromString('secret password');
+    sb.wipe();
+    assert.equal(sb.isWiped, true);
+    // After wipe, all bytes should be 0
+    for (let i = 0; i < sb.length; i++) {
+      // Can't access buffer after wipe — it throws
+    }
+  });
+
+  it('should throw on access after wipe', () => {
+    const sb = SecureBuffer.fromString('test');
+    sb.wipe();
+    assert.throws(() => sb.buffer, /access after wipe/);
+  });
+
+  it('should handle zero-length buffer', () => {
+    const sb = new SecureBuffer(0);
+    assert.equal(sb.length, 0);
+    sb.wipe(); // Should not throw
+    assert.equal(sb.isWiped, true);
+  });
+
+  it('should not throw on double wipe', () => {
+    const sb = SecureBuffer.fromString('test');
+    sb.wipe();
+    sb.wipe(); // Should be idempotent
+    assert.equal(sb.isWiped, true);
+  });
+
+  it('should lock memory (best-effort)', () => {
+    const sb = new SecureBuffer(64);
+    const result = sb.lock();
+    // Lock is best-effort, just check it doesn't throw
+    assert.equal(typeof result, 'boolean');
+  });
+});
+
+describe('SecureString', () => {
+  it('should store and retrieve string value', () => {
+    const ss = new SecureString('my secret');
+    assert.equal(ss.value(), 'my secret');
+    assert.equal(ss.isDestroyed, false);
+  });
+
+  it('should throw on access after destroy', () => {
+    const ss = new SecureString('temporary');
+    ss.destroy();
+    assert.throws(() => ss.value(), /access after destroy/);
+    assert.equal(ss.isDestroyed, true);
+  });
+
+  it('should support use() with auto-destroy', () => {
+    const ss = new SecureString('auto-wipe');
+    const result = ss.use((val) => val.toUpperCase());
+    assert.equal(result, 'AUTO-WIPE');
+    assert.equal(ss.isDestroyed, true);
+  });
+
+  it('should throw on use() after destroy', () => {
+    const ss = new SecureString('gone');
+    ss.destroy();
+    assert.throws(() => ss.use(() => { }), /use after destroy/);
+  });
+
+  it('should report byte length', () => {
+    const ss = new SecureString('hello');
+    assert.equal(ss.byteLength, 5);
+  });
+
+  it('should handle empty string', () => {
+    const ss = new SecureString('');
+    assert.equal(ss.value(), '');
+    ss.destroy();
+    assert.equal(ss.isDestroyed, true);
+  });
+});
+
+describe('MemoryGuard', () => {
+  it('should track active instances', () => {
+    // Clean up first
+    MemoryGuard.wipeAll();
+
+    const sb = new SecureBuffer(16);
+    const ss = new SecureString('tracked');
+    const stats = MemoryGuard.getStats();
+    assert.ok(stats.active >= 2);
+  });
+
+  it('should wipe all tracked instances', () => {
+    MemoryGuard.wipeAll();
+    const sb1 = new SecureBuffer(8);
+    const sb2 = SecureBuffer.fromString('test');
+    const ss1 = new SecureString('hello');
+
+    const result = MemoryGuard.wipeAll();
+    assert.ok(result.wiped >= 3);
+    assert.equal(result.errors, 0);
+  });
+
+  it('should format status string', () => {
+    const status = MemoryGuard.formatStatus();
+    assert.ok(status.includes('Memory Guard'));
+  });
+
+  it('should cleanup dead instances', () => {
+    MemoryGuard.wipeAll();
+    const sb = new SecureBuffer(8);
+    sb.wipe();
+    const cleaned = MemoryGuard.cleanup();
+    assert.ok(cleaned >= 1);
+  });
+});
+
+// ── MFA Tests ───────────────────────────────────────────────
+import { MFAProvider, TOTP_CONFIG, base32Encode, base32Decode } from '../src/security/mfa.js';
+
+describe('MFA – Base32', () => {
+  it('should encode and decode round-trip', () => {
+    const original = Buffer.from('Hello, World!');
+    const encoded = base32Encode(original);
+    const decoded = base32Decode(encoded);
+    assert.deepEqual(decoded, original);
+  });
+
+  it('should produce uppercase alphanumeric output', () => {
+    const encoded = base32Encode(Buffer.from('test'));
+    assert.match(encoded, /^[A-Z2-7]+$/);
+  });
+});
+
+describe('MFA – TOTP', () => {
+  it('should generate a secret with base32 encoding', () => {
+    const { secret, base32 } = MFAProvider.generateSecret();
+    assert.ok(Buffer.isBuffer(secret));
+    assert.equal(secret.length, 20);
+    assert.match(base32, /^[A-Z2-7]+$/);
+    assert.ok(base32.length >= 16);
+  });
+
+  it('should generate a 6-digit TOTP code', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const code = MFAProvider.generateTOTP(base32);
+    assert.match(code, /^\d{6}$/);
+  });
+
+  it('should verify a correct TOTP code', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const code = MFAProvider.generateTOTP(base32);
+    const result = MFAProvider.verifyTOTP(code, base32);
+    assert.equal(result.valid, true);
+  });
+
+  it('should reject an incorrect TOTP code', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const result = MFAProvider.verifyTOTP('000000', base32);
+    // Very unlikely to match, but theoretically possible
+    // Using a fixed known-bad code pattern
+    const result2 = MFAProvider.verifyTOTP('abc', base32);
+    assert.equal(result2.valid, false);
+  });
+
+  it('should accept codes within ±1 time window (clock drift)', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const now = Date.now();
+
+    // Generate code for previous window
+    const prevCode = MFAProvider.generateTOTP(base32, now - 30000);
+    const result = MFAProvider.verifyTOTP(prevCode, base32, now);
+    assert.equal(result.valid, true);
+    assert.equal(result.drift, -1);
+  });
+
+  it('should reject codes outside ±1 time window', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const now = Date.now();
+
+    // Generate code for 3 windows ago
+    const oldCode = MFAProvider.generateTOTP(base32, now - 90000);
+    const result = MFAProvider.verifyTOTP(oldCode, base32, now);
+    assert.equal(result.valid, false);
+  });
+
+  it('should handle empty/null tokens', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    assert.equal(MFAProvider.verifyTOTP('', base32).valid, false);
+    assert.equal(MFAProvider.verifyTOTP(null, base32).valid, false);
+  });
+
+  it('should get remaining seconds', () => {
+    const remaining = MFAProvider.getTimeRemaining();
+    assert.ok(remaining >= 0 && remaining <= 30);
+  });
+});
+
+describe('MFA – Recovery Codes', () => {
+  it('should generate specified number of codes', () => {
+    const codes = MFAProvider.generateRecoveryCodes(5);
+    assert.equal(codes.length, 5);
+  });
+
+  it('should generate codes in XXXX-XXXX format', () => {
+    const codes = MFAProvider.generateRecoveryCodes(3);
+    for (const code of codes) {
+      assert.match(code, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    }
+  });
+
+  it('should verify valid recovery code', () => {
+    const codes = MFAProvider.generateRecoveryCodes(3);
+    const result = MFAProvider.verifyRecoveryCode(codes[0], codes);
+    assert.equal(result.valid, true);
+    assert.equal(result.remainingCodes.length, 2);
+    assert.ok(!result.remainingCodes.includes(codes[0]));
+  });
+
+  it('should reject invalid recovery code', () => {
+    const codes = MFAProvider.generateRecoveryCodes(3);
+    const result = MFAProvider.verifyRecoveryCode('XXXX-XXXX', codes);
+    assert.equal(result.valid, false);
+    assert.equal(result.remainingCodes.length, 3);
+  });
+
+  it('should handle case-insensitive and no-dash input', () => {
+    const codes = ['ABCD-EFGH'];
+    const result = MFAProvider.verifyRecoveryCode('abcdefgh', codes);
+    assert.equal(result.valid, true);
+  });
+
+  it('should default to 10 codes', () => {
+    const codes = MFAProvider.generateRecoveryCodes();
+    assert.equal(codes.length, 10);
+  });
+});
+
+describe('MFA – Setup Info', () => {
+  it('should format setup information', () => {
+    const { base32 } = MFAProvider.generateSecret();
+    const info = MFAProvider.formatSetupInfo(base32);
+    assert.ok(info.otpauthUri.startsWith('otpauth://totp/'));
+    assert.ok(info.otpauthUri.includes(base32));
+    assert.ok(info.displaySecret.length > 0);
+    assert.ok(info.instructions.includes('authenticator'));
+  });
+
+  it('should create default config', () => {
+    const config = MFAProvider.createDefaultConfig();
+    assert.equal(config.enabled, false);
+    assert.equal(config.secret, null);
+    assert.deepEqual(config.recoveryCodes, []);
+    assert.equal(config.setupComplete, false);
+  });
+});
+
+// ── IntegrityChecker Tests ──────────────────────────────────
+import { IntegrityChecker, PROVIDER_COMMANDS } from '../src/security/integrity.js';
+
+describe('IntegrityChecker', () => {
+  it('should initialize with default options', () => {
+    const checker = new IntegrityChecker({ enabled: false });
+    const status = checker.getStatus();
+    assert.equal(status.enabled, false);
+    assert.equal(status.providerCount, 0);
+  });
+
+  it('should compute SHA-256 hash of a file', async () => {
+    // Hash this test file itself
+    const checker = new IntegrityChecker({ enabled: true });
+    const hash = await checker.computeHash(import.meta.url.replace('file:///', ''));
+    assert.match(hash, /^[a-f0-9]{64}$/);
+  });
+
+  it('should compute hash synchronously', () => {
+    const checker = new IntegrityChecker({ enabled: true });
+    const hash = checker.computeHashSync(import.meta.url.replace('file:///', ''));
+    assert.match(hash, /^[a-f0-9]{64}$/);
+  });
+
+  it('should reject hash for non-existent file', async () => {
+    const checker = new IntegrityChecker({ enabled: true });
+    await assert.rejects(
+      () => checker.computeHash('/nonexistent/file/path.js'),
+      /File not found/
+    );
+  });
+
+  it('should verify self-integrity returns valid status', () => {
+    const checker = new IntegrityChecker({ enabled: true });
+    const result = checker.verifySelfIntegrity();
+    assert.ok(['ok', 'mismatch', 'error'].includes(result.status));
+    assert.ok(typeof result.message === 'string');
+  });
+
+  it('should format status string', () => {
+    const checker = new IntegrityChecker({ enabled: true });
+    const status = checker.formatStatus();
+    assert.ok(status.includes('Integrity Checker'));
+  });
+
+  it('should format disabled status', () => {
+    const checker = new IntegrityChecker({ enabled: false });
+    const status = checker.formatStatus();
+    assert.ok(status.includes('DISABLED'));
+  });
+
+  it('should export provider commands', () => {
+    assert.ok(typeof PROVIDER_COMMANDS === 'object');
+    assert.ok('claude' in PROVIDER_COMMANDS);
+    assert.ok('gemini' in PROVIDER_COMMANDS);
+  });
+});

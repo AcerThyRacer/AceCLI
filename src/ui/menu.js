@@ -32,6 +32,8 @@ export async function mainMenu() {
         { name: `${chalk.yellow('🛡️')}  Secure DNS (DoH/DoT)`, value: 'dns' },
         { name: `${chalk.yellow('🔒')} Privacy Settings`, value: 'privacy' },
         { name: `${chalk.yellow('🔐')} Change Password`, value: 'password' },
+        { name: `${chalk.yellow('🔑')} MFA (Two-Factor Auth)`, value: 'mfa' },
+        { name: `${chalk.yellow('🛡️')}  Integrity Checker`, value: 'integrity' },
         new inquirer.Separator(chalk.gray('  ── System ──')),
         { name: `${chalk.magenta('📋')} Audit Log`, value: 'audit' },
         { name: `${chalk.magenta('📤')} Export Audit Log`, value: 'audit-export' },
@@ -313,4 +315,46 @@ function _timeAgo(isoString) {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(isoString).toLocaleDateString();
+}
+
+export async function mfaMenu() {
+  const { action } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'action',
+      message: g('MFA (Two-Factor Authentication)'),
+      prefix: '  🔑',
+      choices: [
+        { name: 'View MFA status', value: 'status' },
+        { name: 'Enable / Setup MFA (TOTP)', value: 'setup' },
+        { name: 'Verify MFA code (test)', value: 'verify' },
+        { name: 'View recovery codes', value: 'recovery' },
+        { name: 'Regenerate recovery codes', value: 'regen' },
+        { name: chalk.red('Disable MFA'), value: 'disable' },
+        { name: chalk.gray('← Back'), value: 'back' },
+      ],
+    },
+  ]);
+  return action;
+}
+
+export async function integrityMenu() {
+  const { action } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'action',
+      message: g('CLI Integrity Checker'),
+      prefix: '  🛡️',
+      choices: [
+        { name: 'View integrity status', value: 'status' },
+        { name: 'Verify all provider binaries', value: 'verify-all' },
+        { name: 'Verify ACE self-integrity', value: 'self-check' },
+        { name: 'Record new baselines', value: 'baseline' },
+        { name: 'View baselined providers', value: 'list' },
+        { name: chalk.red('Clear all baselines'), value: 'clear' },
+        { name: chalk.gray('← Back'), value: 'back' },
+      ],
+    },
+  ]);
+  return action;
 }

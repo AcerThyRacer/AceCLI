@@ -13,7 +13,7 @@ import { homedir } from 'os';
 import { showBanner, showMiniBanner } from './ui/banner.js';
 import { showHelp, showCliHelp } from './ui/help.js';
 import { runSetupWizard } from './ui/wizard.js';
-import { mainMenu, selectProvider, promptInput, confirmAction, vaultMenu, proxyMenu, dnsMenu, privacyMenu, auditExportMenu, recoveryMenu, chatStartMenu, conversationMenu } from './ui/menu.js';
+import { mainMenu, selectProvider, promptInput, confirmAction, vaultMenu, proxyMenu, dnsMenu, privacyMenu, auditExportMenu, recoveryMenu, chatStartMenu, conversationMenu, mfaMenu, integrityMenu } from './ui/menu.js';
 import { ConversationManager } from './conversations.js';
 import { showDashboard, showAuditLog } from './ui/dashboard.js';
 import { ConfigManager } from './config.js';
@@ -26,6 +26,9 @@ import { AuditLogger } from './security/audit.js';
 import { ClipboardManager } from './security/clipboard.js';
 import { SessionRecovery } from './security/recovery.js';
 import { TrackerBlocker } from './security/tracker.js';
+import { MemoryGuard, SecureString } from './security/secure-memory.js';
+import { MFAProvider } from './security/mfa.js';
+import { IntegrityChecker } from './security/integrity.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { PluginManager } from './plugins/plugin-manager.js';
 import { ResponseRenderer } from './ui/renderer.js';
@@ -49,7 +52,14 @@ function gracefulShutdown() {
   }
   if (ctx.clipboard) ctx.clipboard.cancelAllTimers();
   if (ctx.audit) ctx.audit.log({ type: 'SESSION_END' });
-  console.log(chalk.gray('\n  ◈ Session encrypted and sealed. Stay safe. ◈\n'));
+
+  // Wipe all sensitive data from memory
+  const memResult = MemoryGuard.wipeAll();
+  if (memResult.wiped > 0) {
+    ctx.audit?.log({ type: 'MEMORY_WIPED', details: { wiped: memResult.wiped } });
+  }
+
+  console.log(chalk.gray('\n  ◈ Session encrypted and sealed. Memory wiped. Stay safe. ◈\n'));
   process.exit(0);
 }
 
@@ -145,6 +155,56 @@ async function initSession() {
     }
   }
 
+  // ── MFA Check (if enabled) ──────────────────────────────
+  const mfaConfig = (() => {
+    try {
+      const tempConfig = new ConfigManager(password);
+      tempConfig.load();
+      return tempConfig.get('mfa');
+    } catch { return null; }
+  })();
+
+  if (mfaConfig?.enabled && mfaConfig?.setupComplete && mfaConfig?.secret) {
+    let mfaVerified = false;
+    let mfaAttempts = 0;
+    const MAX_MFA_ATTEMPTS = 5;
+
+    while (!mfaVerified && mfaAttempts < MAX_MFA_ATTEMPTS) {
+      const { mfaCode } = await inquirer.prompt([{
+        type: 'input', name: 'mfaCode',
+        message: chalk.cyan('Enter TOTP code (or recovery code):'),
+        prefix: '  🔑',
+      }]);
+
+      // Try TOTP first
+      const totpResult = MFAProvider.verifyTOTP(mfaCode, mfaConfig.secret);
+      if (totpResult.valid) {
+        mfaVerified = true;
+        console.log(chalk.green('  ✔ MFA verified'));
+      } else {
+        // Try recovery code
+        const recoveryResult = MFAProvider.verifyRecoveryCode(mfaCode, mfaConfig.recoveryCodes || []);
+        if (recoveryResult.valid) {
+          mfaVerified = true;
+          // Update stored recovery codes (one-time use)
+          const tempConfig = new ConfigManager(password);
+          tempConfig.load();
+          tempConfig.set('mfa.recoveryCodes', recoveryResult.remainingCodes);
+          console.log(chalk.green('  ✔ Recovery code accepted'));
+          console.log(chalk.yellow(`  ⚠ ${recoveryResult.remainingCodes.length} recovery codes remaining`));
+        } else {
+          mfaAttempts++;
+          console.log(chalk.red(`  ✗ Invalid code. ${MAX_MFA_ATTEMPTS - mfaAttempts} attempts remaining.`));
+        }
+      }
+    }
+
+    if (!mfaVerified) {
+      console.log(chalk.red('\n  ✗ MFA verification failed. Access denied.\n'));
+      process.exit(1);
+    }
+  }
+
   const spinner = ora({ text: 'Initializing secure session...', prefixText: '  ', spinner: 'dots12' }).start();
 
   const sessionId = randomBytes(8).toString('hex');
@@ -212,6 +272,14 @@ async function initSession() {
     masterPassword: password,
   });
 
+  // Integrity checker
+  const integrityChecker = new IntegrityChecker({
+    masterPassword: password,
+    audit,
+    enabled: config.get('integrity.enabled'),
+    autoBaseline: config.get('integrity.autoBaseline'),
+  });
+
   // Provider registry – dynamic loading
   const registry = new ProviderRegistry();
   const providerOpts = { sanitizer, fingerprint, proxy, audit, trackerBlocker, configManager: config };
@@ -243,6 +311,7 @@ async function initSession() {
     config, sanitizer, fingerprint, proxy, dns, audit,
     clipboard, recovery, registry, providers, conversations,
     trackerBlocker, sessionId, keyFingerprint, pluginManager, renderer,
+    integrityChecker, masterPassword: password,
   };
 
   // Set ctx on plugin manager for lifecycle hooks
@@ -264,6 +333,24 @@ async function initSession() {
   console.log(proxy.formatStatus());
   console.log(dns.formatStatus());
   console.log(trackerBlocker.formatStatus());
+
+  // Run integrity check and auto-baseline on launch if enabled
+  if (config.get('integrity.checkOnLaunch') && config.get('integrity.enabled')) {
+    try {
+      // Auto-baseline if no self files tracked yet
+      if (integrityChecker.getStatus().selfFileCount === 0) {
+        integrityChecker.recordSelfBaseline();
+      }
+      const selfCheck = integrityChecker.verifySelfIntegrity();
+      if (selfCheck.status === 'mismatch') {
+        console.log(chalk.red(`  ⚠ INTEGRITY WARNING: ${selfCheck.message}`));
+      }
+    } catch { /* silent */ }
+  }
+
+  // Show integrity and memory status AFTER baseline recording
+  console.log(integrityChecker.formatStatus());
+  console.log(MemoryGuard.formatStatus());
 
   // Startup health warnings
   const clipOk = await clipboard.isAvailable();
@@ -1133,6 +1220,255 @@ async function manageRecovery() {
   }
 }
 
+// ── MFA Management ──────────────────────────────────────────
+async function manageMfa() {
+  while (true) {
+    const action = await mfaMenu();
+    if (action === 'back') return;
+
+    switch (action) {
+      case 'status': {
+        const mfaCfg = ctx.config.get('mfa') || {};
+        console.log();
+        console.log(chalk.cyan('  MFA Status'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        console.log(`  Enabled:    ${mfaCfg.enabled ? chalk.green('YES') : chalk.gray('NO')}`);
+        console.log(`  Setup:      ${mfaCfg.setupComplete ? chalk.green('Complete') : chalk.yellow('Not configured')}`);
+        console.log(`  Recovery:   ${(mfaCfg.recoveryCodes || []).length} codes remaining`);
+        console.log();
+        break;
+      }
+
+      case 'setup': {
+        const { secret, base32 } = MFAProvider.generateSecret();
+        const setupInfo = MFAProvider.formatSetupInfo(base32);
+
+        console.log();
+        console.log(chalk.cyan('  \ud83d\udd11 MFA Setup — TOTP (Time-based One-Time Password)'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        console.log();
+        console.log(chalk.white('  ' + setupInfo.instructions.split('\n').join('\n  ')));
+        console.log();
+
+        // Verify the user can generate a valid code
+        const { code } = await inquirer.prompt([{
+          type: 'input', name: 'code',
+          message: chalk.cyan('Enter the 6-digit code from your authenticator to confirm:'),
+          prefix: '  \ud83d\udd11',
+        }]);
+
+        const result = MFAProvider.verifyTOTP(code, base32);
+        if (!result.valid) {
+          console.log(chalk.red('  \u2717 Invalid code. MFA setup aborted. Try again.'));
+          break;
+        }
+
+        // Generate recovery codes
+        const recoveryCodes = MFAProvider.generateRecoveryCodes();
+
+        console.log(chalk.green('\n  \u2714 MFA setup verified!\n'));
+        console.log(chalk.yellow('  \ud83d\udea8 SAVE THESE RECOVERY CODES — you will not see them again:\n'));
+        for (const rc of recoveryCodes) {
+          console.log(chalk.white(`    ${rc}`));
+        }
+        console.log();
+
+        // Save to config
+        ctx.config.set('mfa.enabled', true);
+        ctx.config.set('mfa.secret', base32);
+        ctx.config.set('mfa.recoveryCodes', recoveryCodes);
+        ctx.config.set('mfa.setupComplete', true);
+
+        ctx.audit.log({ type: 'MFA_ENABLED' });
+        console.log(chalk.green('  \u2714 MFA is now enabled. You will need a code on next login.\n'));
+        break;
+      }
+
+      case 'verify': {
+        const mfaCfg = ctx.config.get('mfa') || {};
+        if (!mfaCfg.enabled || !mfaCfg.secret) {
+          console.log(chalk.yellow('\n  MFA is not enabled. Set it up first.\n'));
+          break;
+        }
+
+        const remaining = MFAProvider.getTimeRemaining();
+        console.log(chalk.gray(`\n  Current code expires in ${remaining}s`));
+
+        const { code } = await inquirer.prompt([{
+          type: 'input', name: 'code',
+          message: chalk.cyan('Enter TOTP code to test:'),
+          prefix: '  \ud83d\udd11',
+        }]);
+
+        const result = MFAProvider.verifyTOTP(code, mfaCfg.secret);
+        if (result.valid) {
+          console.log(chalk.green(`  \u2714 Valid! (drift: ${result.drift} windows)\n`));
+        } else {
+          console.log(chalk.red('  \u2717 Invalid code.\n'));
+        }
+        break;
+      }
+
+      case 'recovery': {
+        const mfaCfg = ctx.config.get('mfa') || {};
+        const codes = mfaCfg.recoveryCodes || [];
+        if (codes.length === 0) {
+          console.log(chalk.yellow('\n  No recovery codes available.\n'));
+          break;
+        }
+        console.log(chalk.cyan('\n  Recovery Codes:'));
+        for (const rc of codes) {
+          console.log(chalk.white(`    ${rc}`));
+        }
+        console.log(chalk.gray(`  ${codes.length} codes remaining\n`));
+        break;
+      }
+
+      case 'regen': {
+        const mfaCfg = ctx.config.get('mfa') || {};
+        if (!mfaCfg.enabled) {
+          console.log(chalk.yellow('\n  MFA is not enabled.\n'));
+          break;
+        }
+
+        const confirmed = await confirmAction('Regenerate recovery codes? Old codes will be invalidated.');
+        if (!confirmed) break;
+
+        const newCodes = MFAProvider.generateRecoveryCodes();
+        ctx.config.set('mfa.recoveryCodes', newCodes);
+
+        console.log(chalk.yellow('\n  \ud83d\udea8 NEW RECOVERY CODES — save these:\n'));
+        for (const rc of newCodes) {
+          console.log(chalk.white(`    ${rc}`));
+        }
+        ctx.audit.log({ type: 'MFA_RECOVERY_REGENERATED' });
+        console.log(chalk.green('\n  \u2714 Recovery codes regenerated.\n'));
+        break;
+      }
+
+      case 'disable': {
+        const confirmed = await confirmAction('Disable MFA? This removes two-factor protection.');
+        if (!confirmed) break;
+
+        ctx.config.set('mfa.enabled', false);
+        ctx.config.set('mfa.secret', null);
+        ctx.config.set('mfa.recoveryCodes', []);
+        ctx.config.set('mfa.setupComplete', false);
+
+        ctx.audit.log({ type: 'MFA_DISABLED' });
+        console.log(chalk.yellow('\n  \u2714 MFA has been disabled.\n'));
+        break;
+      }
+    }
+  }
+}
+
+// ── Integrity Checker Management ────────────────────────────
+async function manageIntegrity() {
+  while (true) {
+    const action = await integrityMenu();
+    if (action === 'back') return;
+
+    switch (action) {
+      case 'status': {
+        const status = ctx.integrityChecker.getStatus();
+        console.log();
+        console.log(chalk.cyan('  Integrity Checker Status'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        console.log(`  Enabled:          ${status.enabled ? chalk.green('YES') : chalk.gray('NO')}`);
+        console.log(`  Provider hashes:  ${status.providerCount}`);
+        console.log(`  ACE source files: ${status.selfFileCount}`);
+        console.log(`  Last check:       ${status.lastChecked || 'Never'}`);
+        console.log();
+        break;
+      }
+
+      case 'verify-all': {
+        const spinner = ora({ text: 'Verifying provider binaries...', prefixText: '  ', spinner: 'dots' }).start();
+        const { results, summary } = await ctx.integrityChecker.verifyAll(true);
+        spinner.stop();
+
+        console.log();
+        console.log(chalk.cyan('  Provider Integrity Results'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        for (const r of results) {
+          if (r.status === 'not_found') continue; // Skip not-installed providers
+          const color = r.status === 'ok' ? chalk.green
+            : r.status === 'baselined' ? chalk.blue
+              : r.status === 'mismatch' ? chalk.red
+                : chalk.gray;
+          console.log(`  ${color(r.message)}`);
+        }
+        console.log();
+        console.log(chalk.gray(`  Summary: ${summary.ok} OK, ${summary.baselined} new baselines, ${summary.mismatch} mismatches, ${summary.notFound} not found`));
+        console.log();
+        break;
+      }
+
+      case 'self-check': {
+        const result = ctx.integrityChecker.verifySelfIntegrity();
+        console.log();
+        if (result.status === 'ok') {
+          console.log(chalk.green(`  ${result.message}`));
+        } else if (result.status === 'mismatch') {
+          console.log(chalk.red(`  ${result.message}`));
+          for (const f of result.modified) {
+            console.log(chalk.red(`    • ${f}`));
+          }
+        } else {
+          console.log(chalk.yellow(`  ${result.message}`));
+        }
+        console.log();
+        break;
+      }
+
+      case 'baseline': {
+        const confirmed = await confirmAction('Record new baselines for all provider binaries and ACE source files?', true);
+        if (!confirmed) break;
+
+        const spinner = ora({ text: 'Recording baselines...', prefixText: '  ', spinner: 'dots' }).start();
+
+        // Baseline providers
+        const { summary } = await ctx.integrityChecker.verifyAll(true);
+
+        // Baseline self
+        const selfCount = ctx.integrityChecker.recordSelfBaseline();
+
+        spinner.succeed(`Baselines recorded: ${summary.baselined + summary.ok} providers, ${selfCount} ACE files`);
+        console.log();
+        break;
+      }
+
+      case 'list': {
+        const providers = ctx.integrityChecker.getBaselinedProviders();
+        if (providers.length === 0) {
+          console.log(chalk.yellow('\n  No provider baselines recorded yet.\n'));
+          break;
+        }
+        console.log();
+        console.log(chalk.cyan('  Baselined Providers'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        for (const p of providers) {
+          console.log(`  ${chalk.white(p.provider)}`);
+          console.log(chalk.gray(`    Hash: ${p.hash.substring(0, 32)}...`));
+          console.log(chalk.gray(`    Path: ${p.path}`));
+          console.log(chalk.gray(`    Recorded: ${p.recordedAt}`));
+        }
+        console.log();
+        break;
+      }
+
+      case 'clear': {
+        const confirmed = await confirmAction('Clear all baseline data? You will need to re-record baselines.');
+        if (!confirmed) break;
+        ctx.integrityChecker.clearBaselines();
+        console.log(chalk.yellow('\n  ✔ All baselines cleared.\n'));
+        break;
+      }
+    }
+  }
+}
+
 // ── Kill switch ─────────────────────────────────────────────
 async function killSwitch() {
   console.log(chalk.red('\n  ╔═══════════════════════════════════════╗'));
@@ -1522,6 +1858,12 @@ export async function run(args) {
           break;
         case 'kill':
           await killSwitch();
+          break;
+        case 'mfa':
+          await manageMfa();
+          break;
+        case 'integrity':
+          await manageIntegrity();
           break;
         case 'exit':
           // Save conversations and final checkpoint before exit

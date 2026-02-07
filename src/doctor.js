@@ -1,7 +1,7 @@
 // ============================================================
 //  AceCLI – Doctor / Health Check System
 // ============================================================
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import boxen from 'boxen';
@@ -71,8 +71,19 @@ const SYSTEM_CHECKS = [
 function checkCommand(command, args, timeout = 5000) {
   return new Promise((resolve) => {
     try {
-      const fullCmd = [command, ...args].join(' ');
-      const proc = spawn(fullCmd, { shell: true, stdio: 'pipe', timeout });
+      let cmd = command;
+      // On Windows, resolve .cmd wrappers to avoid shell: true (DEP0190)
+      if (process.platform === 'win32') {
+        try {
+          const resolved = execSync(`where ${command}`, {
+            stdio: 'pipe', encoding: 'utf8', timeout: 5000,
+          }).trim().split(/\r?\n/)[0];
+          if (resolved) cmd = resolved;
+        } catch {
+          // command not found
+        }
+      }
+      const proc = spawn(cmd, args, { stdio: 'pipe', timeout });
       let output = '';
       proc.stdout?.on('data', (d) => (output += d.toString()));
       proc.stderr?.on('data', (d) => (output += d.toString()));

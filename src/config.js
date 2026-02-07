@@ -27,6 +27,17 @@ const DEFAULT_CONFIG = {
     promptInjectionDetection: true,
     trackerBlocking: true,
   },
+  mfa: {
+    enabled: false,
+    secret: null,
+    recoveryCodes: [],
+    setupComplete: false,
+  },
+  integrity: {
+    enabled: true,
+    autoBaseline: true,
+    checkOnLaunch: true,
+  },
   proxy: {
     enabled: false,
     type: 'socks5',
@@ -71,6 +82,27 @@ function cloneDefaults() {
   return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 }
 
+// Deep-merge: target wins for primitive values, recurse for objects.
+// This ensures new default keys are always present in existing configs.
+function deepMerge(defaults, loaded) {
+  const result = { ...defaults };
+  for (const key of Object.keys(loaded)) {
+    if (
+      loaded[key] !== null &&
+      typeof loaded[key] === 'object' &&
+      !Array.isArray(loaded[key]) &&
+      typeof defaults[key] === 'object' &&
+      defaults[key] !== null &&
+      !Array.isArray(defaults[key])
+    ) {
+      result[key] = deepMerge(defaults[key], loaded[key]);
+    } else {
+      result[key] = loaded[key];
+    }
+  }
+  return result;
+}
+
 export class ConfigManager {
   constructor(masterPassword) {
     this.masterPassword = masterPassword;
@@ -85,7 +117,10 @@ export class ConfigManager {
     try {
       if (existsSync(CONFIG_FILE) && this.encryption) {
         const raw = readFileSync(CONFIG_FILE, 'utf8');
-        this.config = this.encryption.decryptJSON(raw);
+        const loaded = this.encryption.decryptJSON(raw);
+        // Deep-merge: ensure new default keys are present for existing users
+        // (e.g., mfa, integrity added after initial config creation)
+        this.config = deepMerge(cloneDefaults(), loaded);
       }
     } catch {
       this.config = cloneDefaults();
