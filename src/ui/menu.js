@@ -21,6 +21,7 @@ export async function mainMenu() {
         { name: `${chalk.green('🤖')} Chat with AI Provider`, value: 'chat' },
         { name: `${chalk.cyan('⚡')} Quick Prompt (one-shot)`, value: 'quick' },
         { name: `${chalk.blue('🔌')} Launch Provider Interactive`, value: 'interactive' },
+        { name: `${chalk.magenta('📦')} Install AI Tools`, value: 'install-ai' },
         { name: `${chalk.green('💬')} Conversation History`, value: 'conversations' },
         new inquirer.Separator(chalk.gray('  ── Help ──')),
         { name: `${chalk.white('❓')} Help & Documentation`, value: 'help' },

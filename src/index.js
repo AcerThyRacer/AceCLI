@@ -1224,6 +1224,105 @@ async function changePassword() {
     ctx.audit.log({ type: 'PASSWORD_CHANGE_FAILED', details: { error: err.message } });
   }
 }
+// ── Install AI CLI Tools ────────────────────────────────────
+async function installAiClis() {
+  const { execSync } = await import('child_process');
+
+  // Comprehensive list of AI CLI tools
+  const AI_TOOLS = [
+    { name: 'Gemini CLI', key: 'gemini', cmd: 'gemini', install: 'npm install -g @google/gemini-cli', desc: 'Google Gemini AI in your terminal' },
+    { name: 'Claude Code', key: 'claude', cmd: 'claude', install: 'npm install -g @anthropic-ai/claude-code', desc: 'Anthropic Claude agentic coding' },
+    { name: 'OpenAI Codex CLI', key: 'codex', cmd: 'codex', install: 'npm install -g @openai/codex', desc: 'OpenAI Codex coding agent' },
+    { name: 'GitHub Copilot CLI', key: 'copilot', cmd: 'gh', install: 'gh extension install github/gh-copilot', desc: 'AI pair programmer in terminal' },
+    { name: 'Ollama', key: 'ollama', cmd: 'ollama', install: null, desc: 'Local LLMs — download from ollama.com' },
+    { name: 'Aider', key: 'aider', cmd: 'aider', install: 'pip install aider-chat', desc: 'AI pair programming tool' },
+    { name: 'Open Interpreter', key: 'interpreter', cmd: 'interpreter', install: 'pip install open-interpreter', desc: 'Natural language computer control' },
+    { name: 'ShellGPT', key: 'sgpt', cmd: 'sgpt', install: 'pip install shell-gpt', desc: 'ChatGPT in your terminal' },
+    { name: 'Cline CLI', key: 'cline', cmd: 'cline', install: 'npm install -g cline', desc: 'AI coding partner for CLI' },
+    { name: 'AI SDK (Vercel)', key: 'ai-sdk', cmd: 'ai', install: 'npm install -g ai', desc: 'Vercel AI SDK CLI' },
+    { name: 'LLM (Simon Willison)', key: 'llm', cmd: 'llm', install: 'pip install llm', desc: 'CLI for many LLM providers' },
+    { name: 'Mods', key: 'mods', cmd: 'mods', install: 'go install github.com/charmbracelet/mods@latest', desc: 'AI in the command line (Go)' },
+    { name: 'tgpt', key: 'tgpt', cmd: 'tgpt', install: 'npm install -g tgpt', desc: 'ChatGPT in terminal without API key' },
+    { name: 'Claude CMD', key: 'claude-cmd', cmd: 'claude-cmd', install: 'npm install -g claude-cmd', desc: 'Claude AI CLI with agent mode' },
+  ];
+
+  // Check which are installed
+  const isWin = process.platform === 'win32';
+  const statuses = [];
+  for (const tool of AI_TOOLS) {
+    let installed = false;
+    try {
+      execSync(`${isWin ? 'where' : 'which'} ${tool.cmd}`, { stdio: 'pipe' });
+      installed = true;
+    } catch { /* not installed */ }
+    statuses.push({ ...tool, installed });
+  }
+
+  // Build menu choices
+  const choices = statuses.map(t => {
+    const status = t.installed ? chalk.green('✓ installed') : chalk.red('✗ not found');
+    const installable = t.install ? '' : chalk.gray(' (manual)');
+    return {
+      name: `  ${status} ${chalk.bold(t.name)}${installable} — ${chalk.gray(t.desc)}`,
+      value: t.key,
+      disabled: t.installed ? 'Already installed' : false,
+    };
+  });
+
+  choices.push(new inquirer.Separator(chalk.gray('  ──────────────────────────────────')));
+  choices.push({ name: chalk.gray('  ← Back to Main Menu'), value: 'back' });
+
+  const installedCount = statuses.filter(s => s.installed).length;
+  console.log();
+  console.log(chalk.cyan(`  📦 AI CLI Installer — ${installedCount}/${statuses.length} tools detected`));
+  console.log(chalk.gray('  Select a tool to install. Already-installed tools are grayed out.'));
+  console.log();
+
+  const { tool: selectedKey } = await inquirer.prompt([{
+    type: 'list',
+    name: 'tool',
+    message: chalk.cyan('Install AI Tool'),
+    prefix: '  📦',
+    choices,
+    pageSize: 18,
+  }]);
+
+  if (selectedKey === 'back') return;
+
+  const selected = statuses.find(t => t.key === selectedKey);
+  if (!selected) return;
+
+  if (!selected.install) {
+    console.log(chalk.yellow(`\n  ⚠ ${selected.name} requires manual installation.`));
+    if (selected.key === 'ollama') {
+      console.log(chalk.cyan('  Download from: https://ollama.com/download'));
+    }
+    console.log();
+    return;
+  }
+
+  // Confirm installation
+  const { confirm } = await inquirer.prompt([{
+    type: 'confirm',
+    name: 'confirm',
+    message: chalk.yellow(`Install ${selected.name}? Command: ${selected.install}`),
+    prefix: '  ⚠',
+    default: true,
+  }]);
+
+  if (!confirm) return;
+
+  console.log(chalk.yellow(`\n  → Installing ${selected.name}...\n`));
+
+  try {
+    execSync(selected.install, { stdio: 'inherit', shell: true });
+    console.log(chalk.green(`\n  ✓ ${selected.name} installed successfully!\n`));
+    ctx.audit.log({ type: 'AI_TOOL_INSTALLED', details: { tool: selected.name, command: selected.install } });
+  } catch (err) {
+    console.log(chalk.red(`\n  ✗ Installation failed: ${err.message}`));
+    console.log(chalk.yellow(`  Try running manually: ${selected.install}\n`));
+  }
+}
 
 // ── Main loop ───────────────────────────────────────────────
 export async function run(args) {
@@ -1376,6 +1475,9 @@ export async function run(args) {
           break;
         case 'interactive':
           await launchInteractive();
+          break;
+        case 'install-ai':
+          await installAiClis();
           break;
         case 'help':
           showHelp();

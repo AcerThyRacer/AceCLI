@@ -94,12 +94,14 @@ export class BaseProvider {
   }
 
   // Check if the underlying CLI is installed
-  // Uses array-form spawn — no shell injection risk
+  // On Windows, npm globals are .cmd wrappers — spawn needs shell to resolve them
   async isInstalled() {
     return new Promise((resolve) => {
+      const isWin = process.platform === 'win32';
       const proc = spawn(this.command, ['--version'], {
         stdio: 'pipe',
         timeout: 5000,
+        ...(isWin ? { shell: true } : {}),
       });
       proc.on('close', (code) => resolve(code === 0));
       proc.on('error', () => resolve(false));
