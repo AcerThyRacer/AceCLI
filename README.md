@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="ACE CLI Banner" width="700">
+</p>
+
 # 🛡️ ACE CLI
 
 **Security & Anonymity Layer for AI Command Lines**
