@@ -2,6 +2,7 @@
 //  AceCLI – Base Provider Wrapper (CLI Mode)
 //  - Vault API key injection into subprocess environment
 //  - Prompt delivery via stdin (prevents process listing leaks)
+//  - No shell: true — prevents shell injection attacks
 //  - Audit trail integration
 // ============================================================
 import { spawn } from 'child_process';
@@ -17,6 +18,7 @@ const PROVIDER_ENV_MAP = {
 };
 
 // Stream transform that applies sanitization in real-time
+// Uses skipPaths to avoid mangling functional filesystem paths
 class SanitizingTransform extends Transform {
   constructor(sanitizer, audit, direction, providerName) {
     super();
@@ -30,8 +32,9 @@ class SanitizingTransform extends Transform {
     let text = chunk.toString();
 
     if (this.sanitizer?.enabled) {
-      // PII/secret redaction
-      const { text: sanitized, redactions } = this.sanitizer.sanitize(text);
+      // PII/secret redaction — skip path patterns to avoid breaking
+      // functional paths in subprocess I/O (fixes path redaction crash)
+      const { text: sanitized, redactions } = this.sanitizer.sanitize(text, { skipPaths: true });
       if (redactions.length > 0) {
         this.audit?.log({
           type: 'PII_REDACTED_INTERACTIVE',
@@ -91,10 +94,10 @@ export class BaseProvider {
   }
 
   // Check if the underlying CLI is installed
+  // Uses array-form spawn — no shell injection risk
   async isInstalled() {
     return new Promise((resolve) => {
-      const proc = spawn(`${this.command} --version`, {
-        shell: true,
+      const proc = spawn(this.command, ['--version'], {
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -298,7 +301,8 @@ export class BaseProvider {
     return result;
   }
 
-  // Execute via subprocess — supports both args and stdin prompt delivery
+  // Execute via subprocess — array-form spawn (NO shell: true)
+  // This prevents shell injection attacks from malicious prompt content
   async _run(prompt, options) {
     return new Promise((resolve, reject) => {
       let args;
@@ -312,9 +316,9 @@ export class BaseProvider {
         args = [...this.args, ...(options.args || []), prompt];
       }
 
-      const fullCmd = [this.command, ...args].join(' ');
-      const proc = spawn(fullCmd, {
-        shell: true,
+      // SECURITY: Use array-form spawn without shell: true
+      // This prevents shell metacharacter injection (;, |, &&, ``)
+      const proc = spawn(this.command, args, {
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: options.timeout || 120000,
@@ -350,15 +354,14 @@ export class BaseProvider {
   }
 
   // Interactive mode – direct terminal passthrough with secure env
+  // SECURITY: Uses array-form spawn without shell: true
   async interactive(options = {}) {
     const env = this.getSecureEnv();
     const args = this.getInteractiveArgs();
 
     this.audit?.log({ type: 'INTERACTIVE_START', provider: this.name });
 
-    const fullCmd = [this.command, ...args].join(' ');
-    const child = spawn(fullCmd, {
-      shell: true,
+    const child = spawn(this.command, args, {
       env,
       stdio: 'inherit', // Direct TTY access — CLI gets real terminal
       ...options,

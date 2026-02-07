@@ -106,4 +106,4 @@ await registry.loadPlugin('my-provider', './path/to/my-provider.js');
 
 ## License
 
-MIT
+GPLv3

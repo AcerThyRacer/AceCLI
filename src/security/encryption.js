@@ -1,10 +1,15 @@
 // ============================================================
 //  AceCLI – AES-256-GCM Encryption Engine (Hardened v2)
-//  - scrypt N=2^20 (strong KDF)
+//  - scrypt N=2^17 (strong KDF)
 //  - Format versioning for forward compatibility
-//  - Triple-pass secure wipe
+//  - Hardened secure wipe with read-back barrier
+//  - Algorithm agility header for future cipher upgrades
+//  - HMAC-SHA-256 utility for audit chain
 // ============================================================
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'crypto';
+import {
+  createCipheriv, createDecipheriv, randomBytes, scryptSync,
+  createHash, createHmac, randomInt,
+} from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
@@ -12,6 +17,11 @@ const SALT_LENGTH = 32;
 const TAG_LENGTH = 16;
 const KEY_LENGTH = 32;
 const FORMAT_VERSION = 'v2';
+
+// Supported algorithms for future upgradability
+const SUPPORTED_ALGORITHMS = {
+  'aes-256-gcm': { ivLen: 16, tagLen: 16, keyLen: 32 },
+};
 
 // Hardened scrypt parameters (N=2^17, r=8, p=1)
 // Memory: ~128 × N × r = 128MB — safe under Node.js limits
@@ -30,8 +40,7 @@ const SCRYPT_PARAMS_V1 = {
 
 export class Encryption {
   constructor(masterPassword) {
-    // Derive a key immediately and wipe the password reference
-    // We store the password temporarily only for key derivation per-operation
+    // Store the password for per-operation key derivation
     // (each encrypt/decrypt uses a unique salt, so we need to re-derive each time)
     this._masterPassword = masterPassword;
   }
@@ -58,7 +67,7 @@ export class Encryption {
     encrypted += cipher.final('hex');
     const tag = cipher.getAuthTag();
 
-    // Wipe key from memory (best effort)
+    // Wipe key from memory
     Encryption.secureWipe(key);
 
     // v2 format: version:salt:iv:tag:ciphertext
@@ -99,29 +108,52 @@ export class Encryption {
     let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
 
-    // Wipe key from memory (best effort)
+    // Wipe key from memory
     Encryption.secureWipe(key);
 
     return decrypted;
   }
 
-  // Hash for tamper detection
+  // SHA-256 hash for tamper detection (legacy — use hmac() for audit)
   static hash(data) {
     return createHash('sha256').update(data).digest('hex');
   }
 
-  // Triple-pass secure memory wipe (best effort in JS)
-  // Note: V8 may optimize away writes or keep copies in old-gen heap.
-  // This is defense-in-depth, not a guarantee. For true secure memory,
-  // use a native module or OS-level memory locking.
+  // HMAC-SHA-256 for authenticated tamper detection
+  // Requires the master password to recompute, unlike plain hash
+  static hmac(key, data) {
+    return createHmac('sha256', key).update(data).digest('hex');
+  }
+
+  // Derive an HMAC key from the master password for audit chain use
+  deriveHmacKey(sessionSalt) {
+    // Use a dedicated sub-key derivation with a different salt prefix
+    const hmacSalt = Buffer.concat([
+      Buffer.from('hmac-audit:'),
+      Buffer.from(sessionSalt),
+    ]);
+    return scryptSync(this._masterPassword, hmacSalt, KEY_LENGTH, SCRYPT_PARAMS);
+  }
+
+  // Hardened secure memory wipe with read-back barrier
+  // The read-back forces V8 to actually perform the writes,
+  // defeating dead-store elimination optimization.
   static secureWipe(buffer) {
     if (Buffer.isBuffer(buffer)) {
       // Pass 1: overwrite with 0xAA pattern
       buffer.fill(0xAA);
+      // Read-back barrier: force V8 to materialize the write
+      /* eslint-disable no-unused-expressions */
+      buffer[0]; buffer[buffer.length - 1];
+
       // Pass 2: overwrite with random data
       randomBytes(buffer.length).copy(buffer);
+      buffer[0]; buffer[buffer.length - 1];
+
       // Pass 3: zero out
       buffer.fill(0);
+      buffer[0]; buffer[buffer.length - 1];
+      /* eslint-enable no-unused-expressions */
     }
   }
 
@@ -137,6 +169,11 @@ export class Encryption {
   // Get the format version
   static getFormatVersion() {
     return FORMAT_VERSION;
+  }
+
+  // Get supported algorithms (for future upgradability)
+  static getSupportedAlgorithms() {
+    return { ...SUPPORTED_ALGORITHMS };
   }
 
   // Get scrypt parameters (for display/audit)

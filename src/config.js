@@ -2,8 +2,9 @@
 //  AceCLI – Configuration Manager (Encrypted Storage)
 //  - Secure file wiping (randomBytes before delete)
 //  - Deep-clone default config to prevent mutation
+//  - Full key rotation: re-encrypts config, vault, conversations, recovery
 // ============================================================
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
@@ -12,6 +13,8 @@ import { Encryption } from './security/encryption.js';
 const ACE_DIR = join(homedir(), '.ace');
 const CONFIG_FILE = join(ACE_DIR, 'config.enc');
 const VAULT_FILE = join(ACE_DIR, 'vault.enc');
+const CONVERSATIONS_DIR = join(ACE_DIR, 'conversations');
+const RECOVERY_DIR = join(ACE_DIR, 'recovery');
 
 const DEFAULT_CONFIG = {
   security: {
@@ -158,11 +161,13 @@ export class ConfigManager {
     this.saveVault();
   }
 
-  // Change master password – re-encrypt config and vault
+  // Change master password – full key rotation:
+  // Re-encrypts config, vault, conversations, and recovery checkpoints
   changePassword(oldPassword, newPassword) {
     // Decrypt with old password (already loaded in memory)
     const configData = { ...this.config };
     const vaultData = { ...this.vault };
+    const oldEncryption = this.encryption;
 
     // Switch to new encryption
     this.masterPassword = newPassword;
@@ -177,6 +182,51 @@ export class ConfigManager {
     if (Object.keys(this.vault).length > 0) {
       this.saveVault();
     }
+
+    // Re-encrypt conversation history files
+    this._reEncryptDirectory(
+      CONVERSATIONS_DIR, '.enc', oldEncryption, this.encryption
+    );
+
+    // Re-encrypt recovery checkpoints
+    this._reEncryptDirectory(
+      RECOVERY_DIR, '.recovery', oldEncryption, this.encryption
+    );
+  }
+
+  /**
+   * Re-encrypt all files in a directory with a new encryption key.
+   * Reads each file, decrypts with the old key, re-encrypts with the new key.
+   * @param {string} dir - Directory path
+   * @param {string} ext - File extension to target
+   * @param {Encryption} oldEnc - Old encryption instance
+   * @param {Encryption} newEnc - New encryption instance
+   * @returns {number} Number of files re-encrypted
+   */
+  _reEncryptDirectory(dir, ext, oldEnc, newEnc) {
+    if (!oldEnc || !newEnc) return 0;
+    if (!existsSync(dir)) return 0;
+
+    let count = 0;
+    try {
+      const files = readdirSync(dir).filter((f) => f.endsWith(ext));
+      for (const file of files) {
+        const filepath = join(dir, file);
+        try {
+          const raw = readFileSync(filepath, 'utf8');
+          // Try decrypting with old password
+          const decrypted = oldEnc.decrypt(raw);
+          // Re-encrypt with new password
+          const reEncrypted = newEnc.encrypt(decrypted);
+          writeFileSync(filepath, reEncrypted, 'utf8');
+          count++;
+        } catch {
+          // Skip files that fail to decrypt (may be corrupted or different format)
+        }
+      }
+    } catch { /* directory read error */ }
+
+    return count;
   }
 
   // Secure wipe: overwrite with random data before deleting

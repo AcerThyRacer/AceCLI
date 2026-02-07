@@ -17,6 +17,7 @@ export class ConversationManager {
         this.encryption = this.masterPassword ? new Encryption(this.masterPassword) : null;
         this.threads = new Map();   // id → thread object
         this.activeThreadId = null;
+        this.audit = options.audit || null;
 
         // Ensure directory exists
         if (!existsSync(CONV_DIR)) {
@@ -119,7 +120,9 @@ export class ConversationManager {
         // Delete file
         const filepath = join(CONV_DIR, `${threadId}.enc`);
         if (existsSync(filepath)) {
-            try { unlinkSync(filepath); } catch { }
+            try { unlinkSync(filepath); } catch (err) {
+                this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'deleteThreadFile', error: err.message } });
+            }
         }
         this._saveIndex();
     }
@@ -172,7 +175,8 @@ export class ConversationManager {
             writeFileSync(filepath, encrypted, 'utf8');
             this._saveIndex();
             return true;
-        } catch {
+        } catch (err) {
+            this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'saveThread', error: err.message } });
             return false;
         }
     }
@@ -194,7 +198,8 @@ export class ConversationManager {
             const thread = JSON.parse(decrypted);
             this.threads.set(threadId, thread);
             return thread;
-        } catch {
+        } catch (err) {
+            this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'loadThread', error: err.message } });
             return null;
         }
     }
@@ -223,7 +228,9 @@ export class ConversationManager {
             const data = JSON.stringify(index);
             const encrypted = this.encryption.encrypt(data);
             writeFileSync(INDEX_FILE, encrypted, 'utf8');
-        } catch { }
+        } catch (err) {
+            this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'saveIndex', error: err.message } });
+        }
     }
 
     _loadIndex() {
@@ -252,7 +259,9 @@ export class ConversationManager {
                     });
                 }
             }
-        } catch { }
+        } catch (err) {
+            this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'loadIndex', error: err.message } });
+        }
     }
 
     // Ensure thread messages are loaded from disk
@@ -317,8 +326,48 @@ export class ConversationManager {
         try {
             const files = readdirSync(CONV_DIR);
             for (const f of files) {
-                try { unlinkSync(join(CONV_DIR, f)); } catch { }
+                try { unlinkSync(join(CONV_DIR, f)); } catch (err) {
+                    this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'wipeFile', error: err.message } });
+                }
             }
-        } catch { }
+        } catch (err) {
+            this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'wipeAll', error: err.message } });
+        }
+    }
+
+    // ── Detailed Stats ──────────────────────────────────────────
+
+    getDetailedStats() {
+        let totalWords = 0;
+        let totalTokens = 0;
+        const providerBreakdown = {};
+        let totalMsgLength = 0;
+        let msgCount = 0;
+
+        for (const [, thread] of this.threads) {
+            const provider = thread.provider || 'unknown';
+            if (!providerBreakdown[provider]) {
+                providerBreakdown[provider] = { threads: 0, messages: 0, words: 0 };
+            }
+            providerBreakdown[provider].threads++;
+
+            for (const msg of thread.messages) {
+                const words = msg.content ? msg.content.split(/\s+/).filter(w => w.length > 0).length : 0;
+                totalWords += words;
+                totalTokens += Math.ceil((msg.content || '').length / 4);
+                totalMsgLength += (msg.content || '').length;
+                msgCount++;
+                providerBreakdown[provider].messages++;
+                providerBreakdown[provider].words += words;
+            }
+        }
+
+        return {
+            ...this.getStats(),
+            totalWords,
+            estimatedTokens: totalTokens,
+            averageMessageLength: msgCount > 0 ? Math.round(totalMsgLength / msgCount) : 0,
+            providerBreakdown,
+        };
     }
 }

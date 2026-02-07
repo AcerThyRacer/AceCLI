@@ -106,7 +106,7 @@ export class ProviderNotFoundError extends RuntimeError {
     const installGuides = {
       openai: 'pip install openai',
       claude: 'npm install -g @anthropic-ai/claude-code',
-      gemini: 'npm install -g @anthropic-ai/gemini-cli  OR  pip install google-generativeai',
+      gemini: 'npm install -g @google/generative-ai  OR  pip install google-generativeai',
       ollama: 'https://ollama.com/download',
       'gh copilot': 'gh extension install github/gh-copilot',
     };

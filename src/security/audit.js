@@ -1,5 +1,8 @@
 // ============================================================
-//  AceCLI – Encrypted Audit Logger with Tamper Detection
+//  AceCLI – Encrypted Audit Logger with HMAC Tamper Detection
+//  - HMAC-SHA-256 chain (requires master password to forge)
+//  - Encrypted persistence
+//  - Export/import functionality
 // ============================================================
 import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
@@ -19,9 +22,32 @@ export class AuditLogger {
     this.memoryLog = [];
     this.sessionId = options.sessionId || 'unknown';
 
+    // Derive a per-session HMAC key from the master password
+    // This ensures an attacker cannot recompute the hash chain
+    // without knowing the master password
+    this._hmacKey = null;
+    if (this.encryption && options.masterPassword) {
+      try {
+        this._hmacKey = this.encryption.deriveHmacKey(this.sessionId);
+      } catch {
+        // Fallback: no HMAC key — use plain hash (backwards compat)
+        this._hmacKey = null;
+      }
+    }
+
     if (!this.ephemeral) {
       mkdirSync(AUDIT_DIR, { recursive: true });
     }
+  }
+
+  // Compute entry hash — HMAC if key available, SHA-256 fallback
+  _computeHash(prevHash, entry) {
+    const payload = prevHash + JSON.stringify({ ...entry, hash: undefined });
+    if (this._hmacKey) {
+      return Encryption.hmac(this._hmacKey, payload);
+    }
+    // Fallback for backwards compatibility / ephemeral mode
+    return Encryption.hash(payload);
   }
 
   log(event) {
@@ -36,11 +62,11 @@ export class AuditLogger {
       hash: null,
     };
 
-    // Chain hash for tamper detection
+    // Chain hash for tamper detection (HMAC when key available)
     const prevHash = this.memoryLog.length > 0
       ? this.memoryLog[this.memoryLog.length - 1].hash
       : '0'.repeat(64);
-    entry.hash = Encryption.hash(prevHash + JSON.stringify({ ...entry, hash: undefined }));
+    entry.hash = this._computeHash(prevHash, entry);
 
     this.memoryLog.push(entry);
 
@@ -72,9 +98,7 @@ export class AuditLogger {
     for (let i = 0; i < this.memoryLog.length; i++) {
       const entry = this.memoryLog[i];
       const prevHash = i > 0 ? this.memoryLog[i - 1].hash : '0'.repeat(64);
-      const expectedHash = Encryption.hash(
-        prevHash + JSON.stringify({ ...entry, hash: undefined })
-      );
+      const expectedHash = this._computeHash(prevHash, entry);
 
       if (entry.hash !== expectedHash) {
         results.valid = false;
@@ -99,12 +123,17 @@ export class AuditLogger {
       eventTypes: types,
       integrityValid: this.verifyIntegrity().valid,
       ephemeral: this.ephemeral,
+      hmacProtected: !!this._hmacKey,
     };
   }
 
   // Kill switch: wipe all audit data
   wipeAll() {
     this.memoryLog = [];
+    if (this._hmacKey && Buffer.isBuffer(this._hmacKey)) {
+      Encryption.secureWipe(this._hmacKey);
+      this._hmacKey = null;
+    }
     if (!this.ephemeral) {
       try {
         const filepath = join(AUDIT_DIR, `audit_${this.sessionId}.log`);

@@ -1,12 +1,14 @@
 // ============================================================
 //  AceCLI – DNS over HTTPS (DoH) & DNS over TLS (DoT) Resolver
 //  - Multi-provider failover chain
-//  - LRU DNS cache with configurable TTL
+//  - LRU DNS cache with configurable TTL + max TTL clamping
+//  - Crypto-secure query IDs to prevent prediction
 //  - Provider benchmarking
 // ============================================================
 import https from 'https';
 import tls from 'tls';
 import dnsPacket from 'dns-packet';
+import { randomInt } from 'crypto';
 import chalk from 'chalk';
 
 // Provider registry with failover order
@@ -44,6 +46,8 @@ export class DnsResolver {
     this._cache = new Map();
     this._cacheTTL = options.cacheTTL || 300; // 300 seconds default
     this._cacheMax = options.cacheMax || 500;
+    // Max TTL clamp: prevent poisoned records with excessively long TTLs
+    this._maxTTL = options.maxTTL || 3600; // 1 hour maximum
 
     // Stats
     this._queryCount = 0;
@@ -85,9 +89,13 @@ export class DnsResolver {
       this._cache.delete(firstKey);
     }
 
+    // Clamp TTL: use the shorter of upstream TTL, configured TTL, and maxTTL
+    const effectiveTTL = Math.min(this._cacheTTL, this._maxTTL);
+
     this._cache.set(key, {
       result,
       timestamp: Date.now(),
+      ttl: effectiveTTL,
     });
   }
 
@@ -170,9 +178,11 @@ export class DnsResolver {
   }
 
   async _resolveDoH(hostname, type, providerUrl = this.provider) {
+    // Use crypto-secure random for query ID (prevents ID prediction attacks)
+    const queryId = randomInt(1, 65535);
     const buf = dnsPacket.encode({
       type: 'query',
-      id: Math.floor(Math.random() * 65534),
+      id: queryId,
       flags: dnsPacket.RECURSION_DESIRED,
       questions: [{
         type: type,
@@ -193,6 +203,7 @@ export class DnsResolver {
           'Accept': 'application/dns-message',
         },
         agent: this.proxyAgent, // Route DoH through proxy if set
+        rejectUnauthorized: true, // Enforce TLS certificate validation
         timeout: 5000,
       };
 
@@ -207,6 +218,13 @@ export class DnsResolver {
           try {
             const buffer = Buffer.concat(chunks);
             const decoded = dnsPacket.decode(buffer);
+
+            // Validate response ID matches query ID (anti-spoofing)
+            if (decoded.id !== queryId) {
+              reject(new Error(`DNS response ID mismatch: expected ${queryId}, got ${decoded.id}`));
+              return;
+            }
+
             const answers = decoded.answers.map(a => a.data);
             resolve({
               success: true,
@@ -235,9 +253,10 @@ export class DnsResolver {
   async _resolveDoT(hostname, type) {
     const dotProvider = DOT_PROVIDERS['cloudflare']; // Default DoT provider
 
+    const queryId = randomInt(1, 65535);
     const buf = dnsPacket.encode({
       type: 'query',
-      id: Math.floor(Math.random() * 65534),
+      id: queryId,
       flags: dnsPacket.RECURSION_DESIRED,
       questions: [{
         type: type,

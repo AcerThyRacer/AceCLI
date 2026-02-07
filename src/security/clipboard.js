@@ -9,7 +9,7 @@ async function getClipboardy() {
   if (!clipboardy) {
     try {
       clipboardy = await import('clipboardy');
-    } catch {
+    } catch (err) {
       clipboardy = null;
     }
   }
@@ -20,6 +20,7 @@ export class ClipboardManager {
   constructor(options = {}) {
     this.autoClear = options.autoClear !== false;
     this.clearDelay = options.clearDelay || 30;
+    this.audit = options.audit || null;
     this._timers = [];
   }
 
@@ -33,7 +34,8 @@ export class ClipboardManager {
         this.scheduleAutoClear();
       }
       return true;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'clipboard.write', error: err.message } });
       return false;
     }
   }
@@ -44,7 +46,8 @@ export class ClipboardManager {
 
     try {
       return await cb.default.read();
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'clipboard.read', error: err.message } });
       return null;
     }
   }
@@ -56,7 +59,8 @@ export class ClipboardManager {
     try {
       await cb.default.write('');
       return true;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'clipboard.clear', error: err.message } });
       return false;
     }
   }
@@ -81,7 +85,8 @@ export class ClipboardManager {
     try {
       await cb.default.read();
       return true;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'clipboard.isAvailable', error: err.message } });
       return false;
     }
   }

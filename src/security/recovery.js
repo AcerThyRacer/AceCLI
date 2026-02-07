@@ -9,6 +9,14 @@ import { randomBytes } from 'crypto';
 
 const RECOVERY_DIR = join(homedir(), '.ace', 'recovery');
 
+// Validate session ID to prevent path traversal attacks
+const SESSION_ID_REGEX = /^[a-f0-9]{1,64}$/;
+
+function validateSessionId(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') return false;
+  return SESSION_ID_REGEX.test(sessionId);
+}
+
 export class SessionRecovery {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
@@ -16,6 +24,7 @@ export class SessionRecovery {
     this.encryption = this.masterPassword ? new Encryption(this.masterPassword) : null;
     this.sessionId = options.sessionId || randomBytes(8).toString('hex');
     this.checkpointInterval = options.checkpointInterval || 60000; // 1 min
+    this.audit = options.audit || null;
     this._timer = null;
 
     if (this.enabled) {
@@ -47,7 +56,8 @@ export class SessionRecovery {
       const encrypted = this.encryption.encrypt(JSON.stringify(payload));
       writeFileSync(this._getFilePath(), encrypted, 'utf8');
       return true;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'saveCheckpoint', error: err.message } });
       return false;
     }
   }
@@ -55,6 +65,9 @@ export class SessionRecovery {
   // Load a checkpoint
   loadCheckpoint(sessionId) {
     if (!this.encryption) return null;
+
+    // Validate sessionId to prevent path traversal
+    if (sessionId && !validateSessionId(sessionId)) return null;
 
     const filepath = sessionId
       ? join(RECOVERY_DIR, `session_${sessionId}.recovery`)
@@ -65,7 +78,8 @@ export class SessionRecovery {
       const encrypted = readFileSync(filepath, 'utf8');
       const payload = JSON.parse(this.encryption.decrypt(encrypted));
       return payload;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'loadCheckpoint', error: err.message } });
       return null;
     }
   }
@@ -81,17 +95,22 @@ export class SessionRecovery {
         try {
           const stat = statSync(join(RECOVERY_DIR, f));
           return { sessionId: id, modified: stat.mtime };
-        } catch {
+        } catch (err) {
+          this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'listSessions.stat', error: err.message } });
           return { sessionId: id, modified: null };
         }
       });
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'listRecoverableSessions', error: err.message } });
       return [];
     }
   }
 
   // Delete a checkpoint
   deleteCheckpoint(sessionId) {
+    // Validate sessionId to prevent path traversal
+    if (sessionId && !validateSessionId(sessionId)) return false;
+
     const filepath = sessionId
       ? join(RECOVERY_DIR, `session_${sessionId}.recovery`)
       : this._getFilePath();
@@ -103,7 +122,8 @@ export class SessionRecovery {
         unlinkSync(filepath);
       }
       return true;
-    } catch {
+    } catch (err) {
+      this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'deleteCheckpoint', error: err.message } });
       return false;
     }
   }
@@ -116,7 +136,7 @@ export class SessionRecovery {
       try {
         const state = getStateFunc();
         this.saveCheckpoint(state);
-      } catch { /* silent */ }
+      } catch (err) { this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'autoSave', error: err.message } }); }
     }, this.checkpointInterval);
 
     // Don't prevent Node from exiting
@@ -141,6 +161,6 @@ export class SessionRecovery {
         writeFileSync(fp, randomBytes(512));
         unlinkSync(fp);
       }
-    } catch { /* silent */ }
+    } catch (err) { this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'wipeAll', error: err.message } }); }
   }
 }

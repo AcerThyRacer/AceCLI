@@ -2,7 +2,7 @@
 //  AceCLI – System Fingerprint Masking
 // ============================================================
 import { hostname, userInfo, platform, arch, release, cpus, networkInterfaces } from 'os';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 
 const FAKE_HOSTNAMES = [
   'workstation-01', 'dev-node', 'builder-vm', 'ci-runner-42',
@@ -17,8 +17,8 @@ export class FingerprintMask {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
     this.sessionSeed = randomBytes(16).toString('hex');
-    this.fakeHostname = FAKE_HOSTNAMES[Math.floor(Math.random() * FAKE_HOSTNAMES.length)];
-    this.fakeUsername = FAKE_USERNAMES[Math.floor(Math.random() * FAKE_USERNAMES.length)];
+    this.fakeHostname = FAKE_HOSTNAMES[randomInt(FAKE_HOSTNAMES.length)];
+    this.fakeUsername = FAKE_USERNAMES[randomInt(FAKE_USERNAMES.length)];
   }
 
   getRealFingerprint() {
@@ -88,7 +88,7 @@ export class FingerprintMask {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15',
     ];
-    return agents[Math.floor(Math.random() * agents.length)];
+    return agents[randomInt(agents.length)];
   }
 
   getReport() {

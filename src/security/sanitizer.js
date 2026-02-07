@@ -4,23 +4,23 @@
 import chalk from 'chalk';
 
 const PII_PATTERNS = [
-  { name: 'Email',        regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,                   replacement: '[REDACTED_EMAIL]' },
-  { name: 'IPv4',         regex: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,                                       replacement: '[REDACTED_IP]' },
-  { name: 'IPv6',         regex: /\b([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g,                        replacement: '[REDACTED_IPV6]' },
-  { name: 'SSN',          regex: /\b\d{3}-\d{2}-\d{4}\b/g,                                              replacement: '[REDACTED_SSN]' },
-  { name: 'Phone (US)',   regex: /\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,              replacement: '[REDACTED_PHONE]' },
-  { name: 'Credit Card',  regex: /\b(?:\d[ -]*?){13,19}\b/g,                                            replacement: '[REDACTED_CC]' },
-  { name: 'AWS Key',      regex: /AKIA[0-9A-Z]{16}/g,                                                   replacement: '[REDACTED_AWS_KEY]' },
+  { name: 'Email', regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replacement: '[REDACTED_EMAIL]' },
+  { name: 'IPv4', regex: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: '[REDACTED_IP]' },
+  { name: 'IPv6', regex: /\b([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g, replacement: '[REDACTED_IPV6]' },
+  { name: 'SSN', regex: /\b\d{3}-\d{2}-\d{4}\b/g, replacement: '[REDACTED_SSN]' },
+  { name: 'Phone (US)', regex: /\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, replacement: '[REDACTED_PHONE]' },
+  { name: 'Credit Card', regex: /\b(?:\d[ -]*?){13,19}\b/g, replacement: '[REDACTED_CC]' },
+  { name: 'AWS Key', regex: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_KEY]' },
   { name: 'Generic Secret', regex: /(?:secret|password|token|api[_-]?key|apikey|auth)[\s]*[=:]\s*['"]?[^\s'"]{8,}/gi, replacement: '[REDACTED_SECRET]' },
-  { name: 'Bearer Token', regex: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,                                    replacement: 'Bearer [REDACTED_TOKEN]' },
-  { name: 'Private Key',  regex: /-----BEGIN\s+(RSA\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
-  { name: 'JWT',          regex: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/g,          replacement: '[REDACTED_JWT]' },
-  { name: 'GitHub Token', regex: /gh[pousr]_[A-Za-z0-9_]{36,}/g,                                        replacement: '[REDACTED_GH_TOKEN]' },
-  { name: 'Slack Token',  regex: /xox[bpors]-[0-9]+-[0-9]+-[a-zA-Z0-9]+/g,                              replacement: '[REDACTED_SLACK_TOKEN]' },
-  { name: 'UUID',         regex: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_UUID]' },
-  { name: 'MAC Address',  regex: /\b([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\b/g,                        replacement: '[REDACTED_MAC]' },
-  { name: 'Windows Path', regex: /[A-Z]:\\(?:Users|Documents|home)\\[^\s\\]+/gi,                         replacement: '[REDACTED_PATH]' },
-  { name: 'Unix Path',    regex: /\/(?:home|Users)\/[a-zA-Z0-9._-]+/g,                                   replacement: '[REDACTED_PATH]' },
+  { name: 'Bearer Token', regex: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, replacement: 'Bearer [REDACTED_TOKEN]' },
+  { name: 'Private Key', regex: /-----BEGIN\s+(RSA\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
+  { name: 'JWT', regex: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/g, replacement: '[REDACTED_JWT]' },
+  { name: 'GitHub Token', regex: /gh[pousr]_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GH_TOKEN]' },
+  { name: 'Slack Token', regex: /xox[bpors]-[0-9]+-[0-9]+-[a-zA-Z0-9]+/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+  { name: 'UUID', regex: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_UUID]' },
+  { name: 'MAC Address', regex: /\b([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\b/g, replacement: '[REDACTED_MAC]' },
+  { name: 'Windows Path', regex: /[A-Z]:\\(?:Users|Documents|home)\\[^\s\\]+/gi, replacement: '[REDACTED_PATH]' },
+  { name: 'Unix Path', regex: /\/(?:home|Users)\/[a-zA-Z0-9._-]+/g, replacement: '[REDACTED_PATH]' },
 ];
 
 // Prompt injection patterns – regex layer
@@ -130,13 +130,22 @@ export class Sanitizer {
     this.redactionLog = [];
   }
 
-  sanitize(text) {
+  // Patterns that match filesystem paths (can break CLI tool output)
+  static PATH_PATTERN_NAMES = new Set(['Windows Path', 'Unix Path']);
+
+  sanitize(text, options = {}) {
     if (!this.enabled || !text) return { text, redactions: [] };
 
     let result = text;
     const redactions = [];
 
-    const allPatterns = [...PII_PATTERNS, ...this.customPatterns];
+    let allPatterns = [...PII_PATTERNS, ...this.customPatterns];
+
+    // skipPaths: exclude path patterns (used by SanitizingTransform to
+    // avoid breaking functional paths in CLI subprocess I/O)
+    if (options.skipPaths) {
+      allPatterns = allPatterns.filter(p => !Sanitizer.PATH_PATTERN_NAMES.has(p.name));
+    }
 
     for (const pattern of allPatterns) {
       const matches = result.match(pattern.regex);
