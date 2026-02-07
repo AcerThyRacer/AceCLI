@@ -1,0 +1,11 @@
+test/
+node_modules/
+.github/
+.eslintrc.*
+.prettierrc.*
+eslint.config.js
+*.log
+*.tgz
+.DS_Store
+.ace/
+coverage/
