@@ -22,11 +22,13 @@ export function showHelp(topic = null) {
 }
 
 function showFullHelp() {
-  console.log();
-  console.log(g('  ╔══════════════════════════════════════════════════════════╗'));
-  console.log(g('  ║            📖  ACE CLI  –  COMPLETE USER GUIDE          ║'));
-  console.log(g('  ╚══════════════════════════════════════════════════════════╝'));
-  console.log();
+  console.log(g([
+    '',
+    '  ╔══════════════════════════════════════════════════════════╗',
+    '  ║            📖  ACE CLI  –  COMPLETE USER GUIDE          ║',
+    '  ╚══════════════════════════════════════════════════════════╝',
+    '',
+  ].join('\n')));
 
   // ── Quick Start ─────────────────────────────────────────────
   console.log(boxen(
@@ -51,11 +53,9 @@ function showFullHelp() {
   row('ace --no-banner', 'Skip the ASCII art intro animation');
   row('ace --doctor', 'Run health check and exit');
   row('ace --version', 'Show version number');
-  console.log();
 
   // ── Main Menu ───────────────────────────────────────────────
   section('MAIN MENU COMMANDS');
-  console.log();
 
   subsection('🧙 Setup Wizard');
   detail([
@@ -99,9 +99,7 @@ function showFullHelp() {
     `  ${c('help audit')}  ${c('help tracker')}  ${c('help kill')}  ${c('help doctor')}`,
   ]);
 
-  console.log();
   section('SECURITY FEATURES');
-  console.log();
 
   subsection('🛡️ Security Dashboard');
   detail([
@@ -185,9 +183,7 @@ function showFullHelp() {
     '                           audit files, no recovery checkpoints, no traces.',
   ]);
 
-  console.log();
   section('SYSTEM TOOLS');
-  console.log();
 
   subsection('📋 Audit Log');
   detail([
@@ -256,9 +252,7 @@ function showFullHelp() {
     'If AceCLI crashes, your session can be restored on next launch.',
   ]);
 
-  console.log();
   section('DANGER ZONE');
-  console.log();
 
   subsection('💀 Kill Switch');
   detail([
@@ -276,9 +270,7 @@ function showFullHelp() {
     'Use in emergencies when you need to leave no trace.',
   ]);
 
-  console.log();
   section('DATA STORAGE');
-  console.log();
   detail([
     'All data is stored under ~/.ace/ (your home directory):',
     '',
@@ -293,9 +285,7 @@ function showFullHelp() {
     'In ephemeral mode, nothing is written to disk at all.',
   ]);
 
-  console.log();
   section('KEYBOARD SHORTCUTS');
-  console.log();
   detail([
     `  ${c('↑ / ↓')}        Navigate menu items`,
     `  ${c('Enter')}        Select current item`,
@@ -313,11 +303,11 @@ function showFullHelp() {
 
 // ── Topic Helpers ───────────────────────────────────────────
 function section(title) {
-  console.log(chalk.cyan.bold(`  ── ${title} ${'─'.repeat(Math.max(0, 52 - title.length))}`));
+  console.log(`\n${chalk.cyan.bold(`  ── ${title} ${'─'.repeat(Math.max(0, 52 - title.length))}`)}`);
 }
 
 function subsection(title) {
-  console.log(`  ${chalk.white.bold(title)}`);
+  console.log(`\n  ${chalk.white.bold(title)}`);
 }
 
 function detail(lines) {
@@ -335,7 +325,6 @@ function row(cmd, desc) {
 const TOPIC_MAP = {
   chat: () => {
     section('CHAT WITH AI PROVIDER');
-    console.log();
     detail([
       'Multi-turn conversation with any installed AI CLI.',
       '',
@@ -362,7 +351,6 @@ const TOPIC_MAP = {
 
   vault: () => {
     section('API KEY VAULT');
-    console.log();
     detail([
       'Encrypted storage for AI provider API keys.',
       '',
@@ -384,7 +372,6 @@ const TOPIC_MAP = {
 
   proxy: () => {
     section('PROXY / TOR SETTINGS');
-    console.log();
     detail([
       'Route AI API traffic through SOCKS5 proxies or Tor.',
       '',
@@ -407,7 +394,6 @@ const TOPIC_MAP = {
 
   privacy: () => {
     section('PRIVACY SETTINGS');
-    console.log();
     detail([
       'Toggle individual privacy features on/off:',
       '',
@@ -424,7 +410,6 @@ const TOPIC_MAP = {
 
   audit: () => {
     section('AUDIT TRAIL');
-    console.log();
     detail([
       'Hash-chain secured audit log of all session activity.',
       '',
@@ -445,7 +430,6 @@ const TOPIC_MAP = {
 
   tracker: () => {
     section('MASS TRACKER BLOCKER');
-    console.log();
     detail([
       'Comprehensive anti-tracking system with multiple layers:',
       '',
@@ -482,7 +466,6 @@ const TOPIC_MAP = {
 
   kill: () => {
     section('KILL SWITCH');
-    console.log();
     detail([
       '💀 EMERGENCY DATA DESTRUCTION',
       '',
@@ -506,7 +489,6 @@ const TOPIC_MAP = {
 
   doctor: () => {
     section('HEALTH CHECK (DOCTOR)');
-    console.log();
     detail([
       'Diagnostic tool that checks your entire setup.',
       '',
@@ -528,7 +510,6 @@ const TOPIC_MAP = {
 
   recovery: () => {
     section('SESSION RECOVERY');
-    console.log();
     detail([
       'Encrypted checkpoint system for session persistence.',
       '',
@@ -548,7 +529,6 @@ const TOPIC_MAP = {
 
   sanitizer: () => {
     section('PII SANITIZER & INJECTION DETECTOR');
-    console.log();
     detail([
       'Two-layer security scanning system.',
       '',
@@ -580,10 +560,7 @@ const TOPIC_MAP = {
 };
 
 export function showCliHelp() {
-  console.log();
-  console.log(chalk.white.bold('  ACE CLI') + d(' — Security & Anonymity Layer for AI Command Lines'));
-  console.log();
-  console.log(d('  Usage:'));
+  console.log(`\n${chalk.white.bold('  ACE CLI')}${d(' — Security & Anonymity Layer for AI Command Lines')}\n\n${d('  Usage:')}`);
   row('ace', 'Launch AceCLI interactive mode');
   row('ace setup | --setup', 'Run guided setup wizard');
   row('ace help', 'Show complete documentation');
@@ -591,9 +568,11 @@ export function showCliHelp() {
   row('ace --doctor', 'Run system health check');
   row('ace --no-banner', 'Skip startup animation');
   row('ace --version | -v', 'Show version');
-  console.log();
-  console.log(d('  Security features: PII redaction, AES-256 encryption, Tor proxy,'));
-  console.log(d('  fingerprint masking, injection detection, 500+ tracker blocker,'));
-  console.log(d('  clipboard auto-clear, audit trail, kill switch, and more.'));
-  console.log();
+  console.log([
+    '',
+    d('  Security features: PII redaction, AES-256 encryption, Tor proxy,'),
+    d('  fingerprint masking, injection detection, 500+ tracker blocker,'),
+    d('  clipboard auto-clear, audit trail, kill switch, and more.'),
+    '',
+  ].join('\n'));
 }
