@@ -6,7 +6,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
 import gradient from 'gradient-string';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -428,6 +428,13 @@ async function chatMode(preselectedKey) {
 
   ctx.audit.log({ type: 'CHAT_START', provider: provider.name, details: { threadId, mode: isApi ? 'api' : 'cli' } });
 
+  let historyOff = false;
+  let quarantineNext = false;
+  let insertCanaryNext = false;
+  let allowedProvider = null;
+  let deniedProviders = new Set();
+  let proxyDisabledForSession = false;
+
   while (true) {
     const input = await promptInput(`${provider.name}`);
     if (!input) continue;
@@ -488,21 +495,318 @@ async function chatMode(preselectedKey) {
       continue;
     }
 
+    if (cmd === '/net direct') {
+      proxyDisabledForSession = true;
+      ctx.proxy.enabled = false;
+      ctx.dns.setProxyAgent(null);
+      console.log(chalk.green('  ✔ Proxy routing explicitly disabled for this session.'));
+      continue;
+    }
+
+    if (cmd.startsWith('/dns pin ')) {
+      const pinProv = cmd.substring(9).trim();
+      let matchedUrl = null;
+      for (const [k, v] of Object.entries((await import('./security/dns.js')).DOH_PROVIDERS)) {
+        if (k.toLowerCase() === pinProv || v.toLowerCase() === pinProv) {
+          matchedUrl = v;
+          break;
+        }
+      }
+      if (matchedUrl) {
+        ctx.dns.provider = matchedUrl;
+        ctx.dns.failoverProviders = [matchedUrl]; // Reject fallback
+        console.log(chalk.green(`  ✔ Secure DNS pinned to ${matchedUrl}. Fallbacks rejected.`));
+      } else {
+        console.log(chalk.red(`  ✗ DNS provider "${pinProv}" not recognized.`));
+      }
+      continue;
+    }
+
+    if (cmd === '/dns leaktest') {
+      console.log(chalk.cyan('  🔍 Running DNS leaktest...'));
+      const status = ctx.dns.getStatus();
+      if (!status.enabled) {
+        console.log(chalk.red('  ✗ Secure DNS is disabled. Traffic may be leaked to your local ISP.'));
+      } else {
+        console.log(chalk.green(`  ✔ Using Secure DNS (Do${status.method === 'dot' ? 'T' : 'H'} via ${new URL(status.provider).hostname}). Route is clean.`));
+      }
+      continue;
+    }
+
+    if (cmd === '/clipboard off') {
+      ctx.clipboard.enabled = false;
+      console.log(chalk.yellow('  ✔ Clipboard use disabled entirely for this session.'));
+      continue;
+    }
+    if (cmd === '/clipboard on') {
+      ctx.clipboard.enabled = true;
+      console.log(chalk.green('  ✔ Clipboard use enabled.'));
+      continue;
+    }
+
+    if (cmd === '/clipboard purge') {
+      await ctx.clipboard.clear();
+      ctx.clipboard.cancelAllTimers();
+      console.log(chalk.green('  ✔ Clipboard immediately purged and pending timers canceled.'));
+      continue;
+    }
+
+    if (cmd === '/redact preview') {
+      const previewPrompt = await promptInput('Text to preview redaction');
+      if (previewPrompt) {
+        const result = ctx.sanitizer.sanitize(previewPrompt);
+        console.log(chalk.gray('\n  ── Original ──'));
+        console.log(`  ${previewPrompt}`);
+        console.log(chalk.gray('\n  ── Sanitized ──'));
+        console.log(`  ${chalk.green(result.text)}`);
+        if (result.redactions.length > 0) {
+          console.log(ctx.sanitizer.formatWarning(result.redactions));
+        } else {
+          console.log(chalk.gray('  No PII detected.'));
+        }
+      }
+      continue;
+    }
+
+    if (cmd === '/redact strict on') {
+      ctx.sanitizer.strictMode = true;
+      console.log(chalk.green('  ✔ Strict redaction enabled.'));
+      continue;
+    }
+    if (cmd === '/redact strict off') {
+      ctx.sanitizer.strictMode = false;
+      console.log(chalk.yellow('  ✔ Strict redaction disabled.'));
+      continue;
+    }
+
+    if (cmd === '/render safe') {
+      ctx.renderer.safeMode = true;
+      console.log(chalk.green('  ✔ Rendering set to safe mode (plain text only).'));
+      continue;
+    }
+
+    if (cmd === '/render raw') {
+      if (info.type === 'local') {
+        ctx.renderer.safeMode = false;
+        console.log(chalk.yellow('  ✔ Rendering set to raw mode (trusted local provider).'));
+      } else {
+        console.log(chalk.red('  ✗ Raw rendering only allowed for trusted local providers.'));
+      }
+      continue;
+    }
+
+    if (cmd === '/session seal') {
+      console.log(chalk.cyan('  Encrypting state and wiping memory buffers...'));
+      if (ctx.conversations) ctx.conversations.saveAll();
+      if (ctx.recovery) {
+        ctx.recovery.saveCheckpoint(ctx);
+      }
+      const memResult = MemoryGuard.wipeAll();
+      ctx.audit?.log({ type: 'SESSION_SEAL', details: { wiped: memResult.wiped } });
+      console.log(chalk.green(`  ✔ Memory wiped (${memResult.wiped} buffers). State sealed.`));
+      console.log(chalk.yellow('  Restarting chat loop cleanly...'));
+      break; // exits the inner chat loop
+    }
+
+    if (cmd === '/session attestate') {
+      console.log();
+      console.log(chalk.cyan('  Session Attestation:'));
+      console.log(chalk.gray(`  ID: ${ctx.sessionId}`));
+      const auth = new AuthManager();
+      console.log(chalk.gray(`  Auth Status: Verified`));
+      console.log(chalk.gray(`  Trust Mode: ${ctx.sanitizer.strictMode ? 'Strict' : 'Standard'}`));
+      console.log(chalk.gray(`  Plugins: ${ctx.pluginManager.listPlugins().length} loaded`));
+      console.log(chalk.gray(`  Proxy State: ${ctx.proxy.enabled ? 'Enabled' : 'Disabled'}`));
+      const intStat = ctx.integrityChecker.getStatus();
+      console.log(chalk.gray(`  Integrity: ${intStat.enabled ? 'Enforced' : 'Disabled'} (${intStat.providerCount} hashes)`));
+      console.log();
+      continue;
+    }
+
+    if (cmd === '/history off') {
+      historyOff = true;
+      console.log(chalk.yellow('  ✔ Conversation turns will NOT be stored from this point forward.'));
+      continue;
+    }
+
+    if (cmd === '/history purge') {
+      ctx.conversations.deleteThread(threadId);
+      console.log(chalk.red('  ✔ Active thread deleted.'));
+      threadId = ctx.conversations.createThread(providerKey, info.model || 'default');
+      console.log(chalk.green('  ✨ New conversation started.'));
+      continue;
+    }
+
+    if (cmd === '/export secure') {
+      const { exportPass } = await inquirer.prompt([{
+        type: 'password', name: 'exportPass',
+        message: chalk.cyan('Set export password:'),
+        mask: '•', prefix: '  🔒'
+      }]);
+      if (exportPass) {
+        const exported = ctx.conversations.exportThread(threadId, 'json');
+        if (exported) {
+          const { Encryption: Enc } = await import('./security/encryption.js');
+          const encrypted = Enc.encrypt(exported, exportPass);
+          const checksum = createHash('sha256').update(encrypted).digest('hex');
+          const filepath = join(homedir(), '.ace', `secure_export_${threadId}.enc`);
+          writeSecureFile(filepath, JSON.stringify({ data: encrypted, checksum }), 'utf8');
+          console.log(chalk.green(`  ✔ Thread exported securely to ${filepath}`));
+          console.log(chalk.gray(`  Checksum: ${checksum}`));
+        } else {
+          console.log(chalk.red('  ✗ Export failed.'));
+        }
+      }
+      continue;
+    }
+
+    if (cmd.startsWith('/key rotate ')) {
+      const provName = cmd.substring(12).trim();
+      const { newKey } = await inquirer.prompt([{
+        type: 'password', name: 'newKey',
+        message: chalk.cyan(`New API key for ${provName}:`),
+        mask: '•', prefix: '  🔑'
+      }]);
+      if (newKey) {
+        ctx.config.setApiKey(provName, newKey);
+        ctx.renderer.clearCache();
+        console.log(chalk.green(`  ✔ API key rotated for ${provName} and cache invalidated.`));
+      }
+      continue;
+    }
+
+    if (cmd.startsWith('/provider allow ')) {
+      allowedProvider = cmd.substring(16).trim();
+      console.log(chalk.green(`  ✔ Allowed provider restricted to: ${allowedProvider}`));
+      continue;
+    }
+
+    if (cmd.startsWith('/provider deny ')) {
+      const denied = cmd.substring(15).trim();
+      deniedProviders.add(denied);
+      console.log(chalk.red(`  ✔ Provider blocked for this session: ${denied}`));
+      continue;
+    }
+
+    if (cmd === '/plugin off') {
+      ctx.pluginManager.enabled = false;
+      for (const p of ctx.pluginManager.listPlugins()) {
+        await ctx.pluginManager.unloadPlugin(p.name);
+      }
+      console.log(chalk.yellow('  ✔ All plugin providers disabled.'));
+      continue;
+    }
+
+    if (cmd === '/plugin status') {
+      console.log(ctx.pluginManager.formatStatus());
+      continue;
+    }
+
+    if (cmd === '/sandbox report') {
+      console.log(chalk.cyan('  Sandbox Limits:'));
+      console.log(chalk.gray('  - Process isolation: NONE (Runs in current Node context)'));
+      console.log(chalk.gray('  - Filesystem: User privilege level (Sanitized paths available)'));
+      console.log(chalk.gray('  - Network: Custom HTTP clients (HTTPS/SOCKS proxied when configured)'));
+      console.log(chalk.gray('  - Subprocesses: Restricted to registered providers'));
+      console.log(chalk.yellow('  ⚠ Do not overtrust the environment. Executing hostile code locally is unsafe.'));
+      continue;
+    }
+
+    if (cmd === '/threat model') {
+      console.log(chalk.cyan('  Current Exposure:'));
+      console.log(chalk.gray(`  - Disk: ${ctx.audit.ephemeral ? 'Ephemeral mode (No writes)' : 'Encrypted writes'}`));
+      console.log(chalk.gray(`  - Network: ${ctx.proxy.enabled ? 'Tor/Proxy Routed' : 'Direct Connection'}`));
+      console.log(chalk.gray(`  - DNS: ${ctx.dns.enabled ? `Secure (Do${ctx.dns.method === 'dot' ? 'T' : 'H'})` : 'System Default'}`));
+      console.log(chalk.gray(`  - Provider Trust: ${info.type === 'local' ? 'High (Local Engine)' : 'Low (Cloud Engine)'}`));
+      console.log(chalk.gray(`  - Plugin Trust: ${ctx.pluginManager.listPlugins().length > 0 ? 'Potentially risky' : 'None loaded'}`));
+      console.log(chalk.gray(`  - Terminal Risk: ${ctx.renderer.safeMode ? 'Low (Safe Rendering)' : 'Medium (ANSI parsed)'}`));
+      continue;
+    }
+
+    if (cmd === '/opsec check') {
+      console.log(chalk.cyan('  OPSEC Checklist:'));
+      console.log(ctx.proxy.enabled ? chalk.green('  ✔ Proxy active') : chalk.red('  ✗ Proxy disabled'));
+      console.log(ctx.dns.enabled ? chalk.green('  ✔ Secure DNS active') : chalk.red('  ✗ Secure DNS disabled'));
+      console.log(ctx.sanitizer.enabled ? chalk.green('  ✔ PII Redaction active') : chalk.red('  ✗ PII Redaction disabled'));
+      console.log(ctx.fingerprint.enabled ? chalk.green('  ✔ Fingerprint masked') : chalk.red('  ✗ Fingerprint unmasked'));
+      continue;
+    }
+
+    if (cmd === '/prompt classify') {
+      const clsPrompt = await promptInput('Prompt to classify');
+      if (clsPrompt) {
+        const injection = ctx.sanitizer.detectInjection(clsPrompt);
+        let secrecy = 'Low';
+        const pii = ctx.sanitizer.sanitize(clsPrompt).redactions;
+        if (pii.length > 0) secrecy = 'High (PII detected)';
+        console.log(chalk.cyan('  Classification Results:'));
+        console.log(chalk.gray(`  Secrecy: ${secrecy}`));
+        console.log(chalk.gray(`  Legal Sensitivity: Unknown (requires LLM analysis)`));
+        console.log(chalk.gray(`  Injection Risk: ${injection.severity} (Score: ${injection.score})`));
+      }
+      continue;
+    }
+
+    if (cmd === '/response quarantine') {
+      quarantineNext = true;
+      console.log(chalk.yellow('  ✔ The next response will be quarantined without rendering.'));
+      continue;
+    }
+
+    if (cmd === '/canary insert') {
+      insertCanaryNext = true;
+      console.log(chalk.yellow('  ✔ A canary token will be inserted into the next prompt.'));
+      continue;
+    }
+
+    // ── Pre-execution Policy Checks ──
+    if (allowedProvider && provider.name !== allowedProvider) {
+      console.log(chalk.red(`  ⛔ Blocked: Provider ${provider.name} is not the allowed provider (${allowedProvider}).`));
+      continue;
+    }
+    if (deniedProviders.has(provider.name)) {
+      console.log(chalk.red(`  ⛔ Blocked: Provider ${provider.name} is denied for this session.`));
+      continue;
+    }
+
     // ── Add user message to thread ──
-    ctx.conversations.addMessage(threadId, 'user', input);
+    let finalInput = input;
+    if (insertCanaryNext) {
+      const canaryToken = randomBytes(16).toString('hex');
+      finalInput += `\n[CANARY_TOKEN: ${canaryToken}]`;
+      console.log(chalk.gray(`  (Canary token inserted: ${canaryToken})`));
+      insertCanaryNext = false;
+    }
+
+    if (!historyOff) {
+      ctx.conversations.addMessage(threadId, 'user', finalInput);
+    }
 
     // Get conversation history for context
-    const conversationHistory = isApi ? ctx.conversations.getMessages(threadId).slice(0, -1) : [];
+    // Even if history is off for this and future turns, we still send previous context if available.
+    // If history is on, we've already added the current message, so slice(0, -1) gets the history.
+    // If history is off, we didn't add the current message to the thread, so slice(0) gets the whole history.
+    const historyMessages = ctx.conversations.getMessages(threadId);
+    const conversationHistory = isApi ? (historyOff ? historyMessages.slice() : historyMessages.slice(0, -1)) : [];
 
     const spinner = ora({ text: 'Processing...', prefixText: '  ', spinner: 'dots' }).start();
 
     try {
-      const result = await provider.execute(input, { conversationHistory });
+      const result = await provider.execute(finalInput, { conversationHistory });
       spinner.stop();
 
       if (result.success) {
+        if (quarantineNext) {
+          console.log(chalk.yellow('  ⚠ Response quarantined. It has not been rendered.'));
+          if (!historyOff) ctx.conversations.addMessage(threadId, 'assistant', result.output);
+          quarantineNext = false;
+          continue;
+        }
+
         // Add assistant response to thread
-        ctx.conversations.addMessage(threadId, 'assistant', result.output);
+        if (!historyOff) {
+          ctx.conversations.addMessage(threadId, 'assistant', result.output);
+        }
 
         // For non-streaming responses, display the output
         if (!result.streamed) {

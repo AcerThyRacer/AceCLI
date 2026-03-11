@@ -36,6 +36,7 @@ export class ResponseRenderer {
         this.maxCache = options.maxCache || 50;
         this.showCost = options.showCost !== false;
         this.showTokens = options.showTokens !== false;
+        this.safeMode = false;
     }
 
     // ── Markdown Rendering ──────────────────────────────────────
@@ -47,6 +48,10 @@ export class ResponseRenderer {
      */
     renderMarkdown(text) {
         if (!text) return '';
+
+        if (this.safeMode) {
+            return '  ' + text.split('\n').join('\n  ');
+        }
 
         const lines = text.split('\n');
         const rendered = [];
