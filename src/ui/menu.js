@@ -34,6 +34,10 @@ export async function mainMenu() {
         { name: `${chalk.yellow('🔐')} Change Password`, value: 'password' },
         { name: `${chalk.yellow('🔑')} MFA (Two-Factor Auth)`, value: 'mfa' },
         { name: `${chalk.yellow('🛡️')}  Integrity Checker`, value: 'integrity' },
+        { name: `${chalk.yellow('🔏')} Trust Management`, value: 'trust' },
+        new inquirer.Separator(chalk.gray('  ── Session ──')),
+        { name: `${chalk.cyan('🔒')} Lock Session`, value: 'lock' },
+        { name: `${chalk.cyan('👻')} Toggle Ephemeral Mode`, value: 'ephemeral' },
         new inquirer.Separator(chalk.gray('  ── System ──')),
         { name: `${chalk.magenta('📋')} Audit Log`, value: 'audit' },
         { name: `${chalk.magenta('📤')} Export Audit Log`, value: 'audit-export' },
@@ -42,6 +46,7 @@ export async function mainMenu() {
         { name: `${chalk.magenta('🔍')} Test Sanitizer`, value: 'test-sanitizer' },
         { name: `${chalk.magenta('🔄')} Session Recovery`, value: 'recovery' },
         new inquirer.Separator(chalk.gray('  ── Danger Zone ──')),
+        { name: `${chalk.red('🚨')} Panic Mode`, value: 'panic' },
         { name: `${chalk.red('💀')} Kill Switch (wipe session)`, value: 'kill' },
         { name: `${chalk.gray('🚪')} Exit`, value: 'exit' },
       ],
@@ -235,6 +240,8 @@ export async function proxyMenu() {
         { name: 'Custom SOCKS proxy', value: 'custom' },
         { name: 'Disable proxy', value: 'disable' },
         { name: 'Test connection', value: 'test' },
+        new inquirer.Separator(chalk.gray('  ── Network Security ──')),
+        { name: `${chalk.red('🔒')} Net Isolate (force proxy, fail-closed)`, value: 'isolate' },
         { name: chalk.gray('← Back'), value: 'back' },
       ],
     },
@@ -317,6 +324,25 @@ function _timeAgo(isoString) {
   return new Date(isoString).toLocaleDateString();
 }
 
+export async function trustMenu() {
+  const { action } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'action',
+      message: g('Trust Management'),
+      prefix: '  🔏',
+      choices: [
+        { name: 'View trust status', value: 'status' },
+        new inquirer.Separator(chalk.gray('  ── Plugin Trust ──')),
+        { name: 'List trusted plugin pins', value: 'plugin-list' },
+        { name: `${chalk.red('🗑️')}  Remove trusted plugin pin`, value: 'plugin-remove' },
+        { name: chalk.gray('← Back'), value: 'back' },
+      ],
+    },
+  ]);
+  return action;
+}
+
 export async function mfaMenu() {
   const { action } = await inquirer.prompt([
     {
@@ -349,7 +375,12 @@ export async function integrityMenu() {
         { name: 'View integrity status', value: 'status' },
         { name: 'Verify all provider binaries', value: 'verify-all' },
         { name: 'Verify ACE self-integrity', value: 'self-check' },
+        new inquirer.Separator(chalk.gray('  ── Mid-session Commands ──')),
+        { name: `${chalk.cyan('🔍')} Verify all (ACE + providers + plugins)`, value: 'verify' },
+        { name: `${chalk.cyan('📊')} Show diff since last baseline`, value: 'diff' },
+        new inquirer.Separator(chalk.gray('  ── Baselines ──')),
         { name: 'Record new baselines', value: 'baseline' },
+        { name: `${chalk.cyan('📝')} Create baseline (after review)`, value: 'baseline-create' },
         { name: 'View baselined providers', value: 'list' },
         { name: chalk.red('Clear all baselines'), value: 'clear' },
         { name: chalk.gray('← Back'), value: 'back' },

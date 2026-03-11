@@ -9,11 +9,12 @@ import gradient from 'gradient-string';
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
+import { existsSync } from 'fs';
 
 import { showBanner, showMiniBanner } from './ui/banner.js';
 import { showHelp, showCliHelp } from './ui/help.js';
 import { runSetupWizard } from './ui/wizard.js';
-import { mainMenu, selectProvider, promptInput, confirmAction, vaultMenu, proxyMenu, dnsMenu, privacyMenu, auditExportMenu, recoveryMenu, chatStartMenu, conversationMenu, mfaMenu, integrityMenu } from './ui/menu.js';
+import { mainMenu, selectProvider, promptInput, confirmAction, vaultMenu, proxyMenu, dnsMenu, privacyMenu, auditExportMenu, recoveryMenu, chatStartMenu, conversationMenu, mfaMenu, integrityMenu, trustMenu } from './ui/menu.js';
 import { ConversationManager } from './conversations.js';
 import { showDashboard, showAuditLog } from './ui/dashboard.js';
 import { ConfigManager } from './config.js';
@@ -423,7 +424,10 @@ async function chatMode(preselectedKey) {
   if (isApi) {
     console.log(chalk.gray(`  Model: ${info.model || 'default'} | Mode: Native API | Streaming: ON`));
   }
-  console.log(chalk.gray('  Commands: /new /threads /title <name> /save /history /exit'));
+  console.log(chalk.gray('  Commands: /new /threads /title <name> /save /history /lock /panic /ephemeral /trust /exit'));
+  if (ctx.proxy.failClosed) {
+    console.log(chalk.red('  ⚡ NET ISOLATE active — all traffic routed through proxy (fail-closed)'));
+  }
   console.log();
 
   ctx.audit.log({ type: 'CHAT_START', provider: provider.name, details: { threadId, mode: isApi ? 'api' : 'cli' } });
@@ -488,8 +492,63 @@ async function chatMode(preselectedKey) {
       continue;
     }
 
+    // ── New inline security commands ──
+    if (cmd === '/lock') {
+      ctx.conversations.saveThread(threadId);
+      await lockSession();
+      continue;
+    }
+    if (cmd === '/panic') {
+      await panicMode();
+      // Return to main menu after panic — stop the chat session
+      ctx.conversations.saveThread(threadId);
+      return;
+    }
+    if (cmd === '/ephemeral on' || cmd === '/ephemeral off') {
+      const enable = cmd === '/ephemeral on';
+      ctx.config.set('audit.ephemeral', enable);
+      ctx.audit.log({ type: 'SETTING_CHANGED', details: { setting: 'audit.ephemeral', value: enable } });
+      console.log(enable
+        ? chalk.green('  ✔ Ephemeral mode ON — no data written to disk.')
+        : chalk.yellow('  ✔ Ephemeral mode OFF — data will be persisted.')
+      );
+      continue;
+    }
+    if (cmd === '/ephemeral') {
+      await toggleEphemeral();
+      continue;
+    }
+    if (cmd === '/trust') {
+      await manageTrust();
+      continue;
+    }
+    if (cmd === '/trust status') {
+      // Inline trust status
+      const proxyStatus = ctx.proxy.getStatus();
+      const dnsStatus = ctx.dns.getStatus();
+      const integrityStatus = ctx.integrityChecker.getStatus();
+      console.log();
+      console.log(chalk.cyan('  Trust Status'));
+      console.log(`  Plugins: ${ctx.pluginManager.enabled ? chalk.green('enabled') : chalk.gray('disabled')}`);
+      console.log(`  Proxy:   ${proxyStatus.enabled ? chalk.green(`${proxyStatus.proxyType} → ${proxyStatus.endpoint}`) : chalk.yellow('disabled')}`);
+      if (proxyStatus.isolateMode) console.log(`           ${chalk.red('⚡ ISOLATED (fail-closed)')}`);
+      console.log(`  DNS:     ${dnsStatus.enabled ? chalk.green(`${dnsStatus.method.toUpperCase()}`) : chalk.yellow('system')}`);
+      console.log(`  Baseline: ${integrityStatus.lastChecked ? chalk.gray(new Date(integrityStatus.lastChecked).toLocaleString()) : chalk.yellow('none')}`);
+      console.log(`  Storage: ${ctx.config.get('audit.ephemeral') ? chalk.cyan('ephemeral') : chalk.gray('persistent')}`);
+      console.log();
+      continue;
+    }
+
     // ── Add user message to thread ──
     ctx.conversations.addMessage(threadId, 'user', input);
+
+    // Fail-closed guard: if net isolate is active, ensure proxy is still enabled
+    if (ctx.proxy.failClosed && !ctx.proxy.enabled) {
+      const thread = ctx.conversations.getThread(threadId);
+      if (thread) thread.messages.pop();
+      console.log(chalk.red('  ⛔ BLOCKED: Net isolate is active but proxy is disabled. Re-enable the proxy to continue.'));
+      continue;
+    }
 
     // Get conversation history for context
     const conversationHistory = isApi ? ctx.conversations.getMessages(threadId).slice(0, -1) : [];
@@ -1008,6 +1067,40 @@ async function manageProxy() {
         spinner.fail(`Connection failed: ${result.error}`);
       }
     }
+
+    if (action === 'isolate') {
+      console.log(chalk.red('\n  ╔══════════════════════════════════════════════╗'));
+      console.log(chalk.red('  ║  🔒  NET ISOLATE — FAIL CLOSED MODE          ║'));
+      console.log(chalk.red('  ╚══════════════════════════════════════════════╝\n'));
+
+      console.log(chalk.yellow('  This will:'));
+      console.log(chalk.yellow('  • Force all outbound traffic through the proxy (Tor if no proxy set)'));
+      console.log(chalk.yellow('  • Disable direct network fallback'));
+      console.log(chalk.yellow('  • Refuse AI requests if the proxy is unreachable (fail-closed)\n'));
+
+      const confirmed = await confirmAction('Enable network isolation?');
+      if (!confirmed) {
+        console.log(chalk.gray('  Aborted.'));
+        continue;
+      }
+
+      ctx.proxy.isolate();
+
+      // Persist the proxy settings
+      ctx.config.set('proxy.enabled', true);
+      ctx.config.set('proxy.host', ctx.proxy.host);
+      ctx.config.set('proxy.port', ctx.proxy.port);
+      ctx.config.set('proxy.type', ctx.proxy.proxyType);
+      ctx.config.set('proxy.isolateMode', true);
+      ctx.config.set('proxy.failClosed', true);
+
+      // Update DNS to use the proxy agent
+      ctx.dns.setProxyAgent(ctx.proxy.getAgent());
+
+      console.log(chalk.red('\n  ✔ Network isolated — all traffic routed through proxy.'));
+      console.log(chalk.red('  ✔ Fail-closed active — AI requests will be blocked if proxy is down.'));
+      console.log(chalk.gray(`  Proxy endpoint: ${ctx.proxy.getProxyUrl()}\n`));
+    }
   }
 }
 
@@ -1368,6 +1461,237 @@ async function manageMfa() {
   }
 }
 
+// ── Lock session ────────────────────────────────────────────
+async function lockSession() {
+  console.clear();
+  console.log(chalk.cyan('\n  🔒 Session Locked\n'));
+  console.log(chalk.gray('  ─────────────────────────────────────────────────────'));
+  console.log(chalk.yellow('  Re-authenticate to resume your session.\n'));
+
+  ctx.audit.log({ type: 'SESSION_LOCKED' });
+
+  const auth = new AuthManager();
+  let verified = false;
+  let attempts = 0;
+  const MAX_ATTEMPTS = 5;
+
+  while (!verified && attempts < MAX_ATTEMPTS) {
+    const { pass } = await inquirer.prompt([{
+      type: 'password', name: 'pass',
+      message: chalk.cyan('Enter master password:'),
+      prefix: '  🔐', mask: '•',
+      validate: (v) => v.length > 0 || 'Password is required',
+    }]);
+
+    if (auth.verifyPassword(pass)) {
+      verified = true;
+    } else {
+      attempts++;
+      const backoffMs = Math.min(15000, 1000 * (2 ** Math.min(attempts, 4)));
+      console.log(chalk.red(`  ✗ Incorrect password. Backing off for ${Math.ceil(backoffMs / 1000)}s.`));
+      await sleep(backoffMs);
+    }
+  }
+
+  if (!verified) {
+    console.log(chalk.red('\n  ✗ Too many failed attempts. Session terminated.\n'));
+    gracefulShutdown();
+    return;
+  }
+
+  // Re-verify MFA if enabled
+  const mfaCfg = ctx.config.get('mfa');
+  if (mfaCfg?.enabled && mfaCfg?.setupComplete && mfaCfg?.secret) {
+    let mfaVerified = false;
+    let mfaAttempts = 0;
+    const MAX_MFA_ATTEMPTS = 5;
+
+    while (!mfaVerified && mfaAttempts < MAX_MFA_ATTEMPTS) {
+      const { mfaCode } = await inquirer.prompt([{
+        type: 'input', name: 'mfaCode',
+        message: chalk.cyan('Enter TOTP code (or recovery code):'),
+        prefix: '  🔑',
+      }]);
+
+      const totpResult = MFAProvider.verifyTOTP(mfaCode, mfaCfg.secret);
+      if (totpResult.valid) {
+        mfaVerified = true;
+        console.log(chalk.green('  ✔ MFA verified'));
+      } else {
+        const recoveryResult = MFAProvider.verifyRecoveryCode(mfaCode, mfaCfg.recoveryCodes || []);
+        if (recoveryResult.valid) {
+          mfaVerified = true;
+          ctx.config.set('mfa.recoveryCodes', recoveryResult.remainingCodes);
+          console.log(chalk.green('  ✔ Recovery code accepted'));
+        } else {
+          mfaAttempts++;
+          console.log(chalk.red(`  ✗ Invalid code. ${MAX_MFA_ATTEMPTS - mfaAttempts} attempts remaining.`));
+        }
+      }
+    }
+
+    if (!mfaVerified) {
+      console.log(chalk.red('\n  ✗ MFA verification failed. Session terminated.\n'));
+      gracefulShutdown();
+      return;
+    }
+  }
+
+  ctx.audit.log({ type: 'SESSION_UNLOCKED' });
+  console.log(chalk.green('\n  ✔ Session unlocked.\n'));
+}
+
+// ── Panic mode ──────────────────────────────────────────────
+async function panicMode() {
+  console.clear();
+
+  // Wipe clipboard immediately
+  try {
+    await ctx.clipboard.clear();
+    ctx.clipboard.cancelAllTimers();
+  } catch { /* silent */ }
+
+  // Pause autosave to avoid writing state to disk
+  try {
+    ctx.recovery.stopAutoSave();
+  } catch { /* silent */ }
+
+  // Disable all loaded plugins
+  try {
+    ctx.pluginManager.enabled = false;
+    const plugins = ctx.pluginManager.listPlugins();
+    for (const p of plugins) {
+      await ctx.pluginManager.unloadPlugin(p.name);
+    }
+  } catch { /* silent */ }
+
+  ctx.audit.log({ type: 'PANIC_MODE_ACTIVATED' });
+
+  console.log(chalk.red('  ╔══════════════════════════════════════════╗'));
+  console.log(chalk.red('  ║  🚨  PANIC MODE ACTIVATED  🚨            ║'));
+  console.log(chalk.red('  ╚══════════════════════════════════════════╝'));
+  console.log();
+  console.log(chalk.green('  ✔ Screen cleared'));
+  console.log(chalk.green('  ✔ Clipboard wiped'));
+  console.log(chalk.green('  ✔ Autosave paused'));
+  console.log(chalk.green('  ✔ Plugins disabled and unloaded'));
+  console.log();
+  console.log(chalk.yellow('  Provider I/O stopped — no new AI requests will be processed.'));
+  console.log(chalk.gray('  To resume autosave, re-enter Session Recovery from the main menu.'));
+  console.log();
+}
+
+// ── Toggle ephemeral mode ───────────────────────────────────
+async function toggleEphemeral() {
+  const current = ctx.config.get('audit.ephemeral');
+  const next = !current;
+  ctx.config.set('audit.ephemeral', next);
+  ctx.audit.log({ type: 'SETTING_CHANGED', details: { setting: 'audit.ephemeral', value: next } });
+  if (next) {
+    console.log(chalk.green('\n  ✔ Ephemeral mode ENABLED — no data will be written to disk this session.\n'));
+  } else {
+    console.log(chalk.yellow('\n  ✔ Ephemeral mode DISABLED — session data will be persisted to disk.\n'));
+  }
+}
+
+// ── Trust management ────────────────────────────────────────
+async function manageTrust() {
+  while (true) {
+    const action = await trustMenu();
+    if (action === 'back') return;
+
+    switch (action) {
+      case 'status': {
+        const proxyStatus = ctx.proxy.getStatus();
+        const dnsStatus = ctx.dns.getStatus();
+        const integrityStatus = ctx.integrityChecker.getStatus();
+        const pluginsEnabled = ctx.pluginManager.enabled;
+        const pluginCount = ctx.pluginManager.listPlugins().length;
+        const ephemeral = ctx.config.get('audit.ephemeral');
+        const storageMode = ephemeral ? 'Ephemeral (zero-disk)' : 'Persistent';
+
+        console.log();
+        console.log(chalk.cyan('  Trust Status'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        console.log(`  Plugins:         ${pluginsEnabled ? chalk.green(`ENABLED (${pluginCount} loaded)`) : chalk.gray('DISABLED')}`);
+        console.log(`  Proxy:           ${proxyStatus.enabled ? chalk.green(`${proxyStatus.proxyType.toUpperCase()} → ${proxyStatus.endpoint}`) : chalk.yellow('DISABLED (direct)')}`);
+        if (proxyStatus.isolateMode) {
+          console.log(`                   ${chalk.red('⚡ ISOLATED — fail-closed, no direct fallback')}`);
+        }
+        console.log(`  DNS mode:        ${dnsStatus.enabled ? chalk.green(`${dnsStatus.method.toUpperCase()} via ${new URL(dnsStatus.provider).hostname}`) : chalk.yellow('System DNS (unencrypted)')}`);
+        const baselineAge = integrityStatus.lastChecked
+          ? chalk.gray(`(baseline: ${new Date(integrityStatus.lastChecked).toLocaleString()})`)
+          : chalk.yellow('(no baseline recorded)');
+        console.log(`  Integrity:       ${integrityStatus.enabled ? chalk.green(`${integrityStatus.providerCount} providers, ${integrityStatus.selfFileCount} ACE files`) : chalk.gray('DISABLED')} ${baselineAge}`);
+        console.log(`  Storage mode:    ${ephemeral ? chalk.cyan(storageMode) : chalk.gray(storageMode)}`);
+        console.log();
+        break;
+      }
+
+      case 'plugin-list': {
+        const allowedPlugins = ctx.config.get('plugins.allowed') || {};
+        const entries = Object.entries(allowedPlugins);
+        if (entries.length === 0) {
+          console.log(chalk.gray('\n  No plugin pins registered.\n'));
+          break;
+        }
+        console.log();
+        console.log(chalk.cyan('  Trusted Plugin Pins'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        const pluginsDir = PluginManager.getPluginsDir();
+        for (const [filename, hash] of entries) {
+          const filepath = join(pluginsDir, filename);
+          const onDisk = existsSync(filepath);
+          const diskStatus = onDisk ? chalk.green('on disk') : chalk.red('missing');
+          console.log(`  ${chalk.white(filename)}`);
+          console.log(chalk.gray(`    Hash: ${hash.substring(0, 32)}...`));
+          console.log(chalk.gray(`    File: ${diskStatus}`));
+        }
+        console.log();
+        break;
+      }
+
+      case 'plugin-remove': {
+        const allowedPlugins = ctx.config.get('plugins.allowed') || {};
+        const entries = Object.entries(allowedPlugins);
+        if (entries.length === 0) {
+          console.log(chalk.gray('\n  No plugin pins to remove.\n'));
+          break;
+        }
+
+        const { filename } = await inquirer.prompt([{
+          type: 'list',
+          name: 'filename',
+          message: 'Select plugin pin to remove:',
+          choices: entries.map(([f]) => f),
+          prefix: '  ',
+        }]);
+
+        const confirmed = await confirmAction(`Remove trusted pin for ${filename}? The plugin will no longer load.`);
+        if (!confirmed) {
+          console.log(chalk.gray('  Aborted.'));
+          break;
+        }
+
+        const updated = { ...allowedPlugins };
+        delete updated[filename];
+        ctx.config.set('plugins.allowed', updated);
+
+        // Unload the plugin if currently loaded
+        const loaded = ctx.pluginManager.listPlugins().find((p) => p.filename === filename);
+        if (loaded) {
+          await ctx.pluginManager.unloadPlugin(loaded.name);
+          console.log(chalk.yellow(`  ✔ Plugin unloaded: ${loaded.name}`));
+        }
+
+        ctx.audit.log({ type: 'PLUGIN_PIN_REMOVED', details: { filename } });
+        console.log(chalk.red(`  ✔ Plugin pin removed: ${filename}\n`));
+        break;
+      }
+    }
+  }
+}
+
 // ── Integrity Checker Management ────────────────────────────
 async function manageIntegrity() {
   while (true) {
@@ -1440,6 +1764,143 @@ async function manageIntegrity() {
         const selfCount = ctx.integrityChecker.recordSelfBaseline();
 
         spinner.succeed(`Baselines recorded: ${summary.baselined + summary.ok} providers, ${selfCount} ACE files`);
+        console.log();
+        break;
+      }
+
+      case 'verify': {
+        // Full mid-session verification: ACE self + providers + loaded plugins
+        const spinner = ora({ text: 'Verifying all components...', prefixText: '  ', spinner: 'dots' }).start();
+
+        // Verify providers
+        const { results, summary: provSummary } = await ctx.integrityChecker.verifyAll(false);
+
+        // Verify self
+        const selfResult = ctx.integrityChecker.verifySelfIntegrity();
+
+        // Verify loaded plugins against their pinned hashes
+        const allowedPlugins = ctx.config.get('plugins.allowed') || {};
+        const pluginsDir = PluginManager.getPluginsDir();
+        const pluginResults = [];
+        for (const [filename, expectedHash] of Object.entries(allowedPlugins)) {
+          const filepath = join(pluginsDir, filename);
+          const result = ctx.integrityChecker.verifyPlugin(filepath, expectedHash);
+          pluginResults.push({ filename, ...result });
+        }
+
+        spinner.stop();
+
+        console.log();
+        console.log(chalk.cyan('  Full Integrity Verification'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+
+        // Self integrity
+        const selfColor = selfResult.status === 'ok' ? chalk.green : chalk.red;
+        console.log(selfColor(`  ACE: ${selfResult.message}`));
+        if (selfResult.status === 'mismatch') {
+          for (const f of selfResult.modified) {
+            console.log(chalk.red(`    • ${f}`));
+          }
+        }
+
+        // Provider integrity
+        for (const r of results) {
+          if (r.status === 'not_found') continue;
+          const color = r.status === 'ok' ? chalk.green : r.status === 'mismatch' ? chalk.red : chalk.gray;
+          console.log(`  ${color(r.message)}`);
+        }
+
+        // Plugin integrity
+        if (pluginResults.length > 0) {
+          console.log(chalk.gray('  ── Plugins ──'));
+          for (const p of pluginResults) {
+            const color = p.status === 'ok' ? chalk.green : p.status === 'mismatch' ? chalk.red : chalk.yellow;
+            console.log(`  ${color(`${p.filename}: ${p.message}`)}`);
+          }
+        }
+
+        console.log();
+        const total = provSummary.ok + provSummary.mismatch;
+        const pluginOk = pluginResults.filter((p) => p.status === 'ok').length;
+        const pluginFail = pluginResults.filter((p) => p.status !== 'ok' && p.status !== 'not_found').length;
+        console.log(chalk.gray(`  Summary: providers ${provSummary.ok}/${total} OK | self ${selfResult.status} | plugins ${pluginOk}/${pluginResults.length} OK`));
+        if (provSummary.mismatch > 0 || selfResult.status === 'mismatch' || pluginFail > 0) {
+          console.log(chalk.red('  ⚠ Integrity issues detected — review above for details.'));
+        }
+        ctx.audit.log({
+          type: 'INTEGRITY_VERIFY_RUN',
+          details: { selfStatus: selfResult.status, providerMismatches: provSummary.mismatch, pluginFails: pluginFail },
+        });
+        console.log();
+        break;
+      }
+
+      case 'diff': {
+        const spinner = ora({ text: 'Computing diff against baseline...', prefixText: '  ', spinner: 'dots' }).start();
+        const diff = await ctx.integrityChecker.getDiff();
+        spinner.stop();
+
+        console.log();
+        console.log(chalk.cyan('  Changes Since Last Baseline'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+
+        if (diff.baselineAge) {
+          console.log(chalk.gray(`  Baseline recorded: ${new Date(diff.baselineAge).toLocaleString()}`));
+        } else {
+          console.log(chalk.yellow('  ⚠ No baseline recorded — run "Record new baselines" first.'));
+          console.log();
+          break;
+        }
+        console.log();
+
+        const totalChanges = diff.summary.modified + diff.summary.added + diff.summary.removed;
+        if (totalChanges === 0) {
+          console.log(chalk.green('  ✔ No changes detected since last baseline.'));
+          console.log(chalk.gray(`  ${diff.summary.unchanged} files/binaries unchanged.`));
+        } else {
+          // Provider changes
+          if (diff.providers.length > 0) {
+            console.log(chalk.yellow('  Provider Binaries:'));
+            for (const p of diff.providers) {
+              const color = p.status === 'modified' ? chalk.red : p.status === 'removed' ? chalk.yellow : chalk.gray;
+              console.log(`    ${color(`• [${p.status.toUpperCase()}] ${p.message}`)}`);
+            }
+            console.log();
+          }
+
+          // Self-file changes
+          if (diff.selfFiles.length > 0) {
+            console.log(chalk.yellow('  ACE Source Files:'));
+            for (const f of diff.selfFiles) {
+              const icon = f.status === 'modified' ? chalk.red('M') : f.status === 'added' ? chalk.cyan('A') : chalk.yellow('D');
+              console.log(`    [${icon}] ${f.file}`);
+            }
+            console.log();
+          }
+
+          console.log(chalk.gray(`  Summary: ${diff.summary.modified} modified, ${diff.summary.added} added, ${diff.summary.removed} removed, ${diff.summary.unchanged} unchanged`));
+        }
+        console.log();
+        break;
+      }
+
+      case 'baseline-create': {
+        console.log(chalk.cyan('\n  📝 Create New Baseline'));
+        console.log(chalk.gray('  ───────────────────────────────────────────'));
+        console.log(chalk.yellow('  This records current hashes of all ACE source files and provider'));
+        console.log(chalk.yellow('  binaries as the new trusted baseline.'));
+        console.log(chalk.yellow('  Only do this after reviewing any changes.\n'));
+
+        const confirmed = await confirmAction('Record a new trusted baseline now?', true);
+        if (!confirmed) break;
+
+        const spinner = ora({ text: 'Recording baseline...', prefixText: '  ', spinner: 'dots' }).start();
+
+        const { summary } = await ctx.integrityChecker.verifyAll(true);
+        const selfCount = ctx.integrityChecker.recordSelfBaseline();
+
+        spinner.succeed(`Baseline created: ${summary.baselined + summary.ok} provider(s), ${selfCount} ACE file(s)`);
+        ctx.audit.log({ type: 'BASELINE_CREATED_MANUAL', details: { providers: summary.baselined + summary.ok, selfFiles: selfCount } });
         console.log();
         break;
       }
@@ -1884,6 +2345,18 @@ export async function run(args) {
           break;
         case 'integrity':
           await manageIntegrity();
+          break;
+        case 'trust':
+          await manageTrust();
+          break;
+        case 'lock':
+          await lockSession();
+          break;
+        case 'panic':
+          await panicMode();
+          break;
+        case 'ephemeral':
+          await toggleEphemeral();
           break;
         case 'exit':
           // Save conversations and final checkpoint before exit

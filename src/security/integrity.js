@@ -483,6 +483,116 @@ export class IntegrityChecker {
             path: val.path,
         }));
     }
+
+    /**
+     * Compute a diff between the current on-disk state and the stored baseline.
+     * Shows which provider binaries and ACE source files have changed, been added,
+     * or been removed since the last baseline was recorded.
+     * @returns {Promise<{ providers: Array, selfFiles: Array, summary: { unchanged: number, modified: number, added: number, removed: number }, baselineAge: string|null }>}
+     */
+    async getDiff() {
+        const diff = {
+            providers: [],
+            selfFiles: [],
+            summary: { unchanged: 0, modified: 0, added: 0, removed: 0 },
+            baselineAge: this.#hashDb.recordedAt || null,
+        };
+
+        // Provider binary diff
+        for (const [providerKey, baseline] of Object.entries(this.#hashDb.providers)) {
+            const binaryPath = this.findBinary(PROVIDER_COMMANDS[providerKey]);
+            if (!binaryPath) {
+                diff.providers.push({
+                    name: providerKey,
+                    status: 'removed',
+                    message: `${providerKey}: binary no longer found in PATH`,
+                });
+                diff.summary.removed++;
+                continue;
+            }
+
+            try {
+                const currentHash = await this.computeHash(binaryPath);
+                if (currentHash === baseline.hash) {
+                    diff.summary.unchanged++;
+                } else {
+                    diff.providers.push({
+                        name: providerKey,
+                        status: 'modified',
+                        path: binaryPath,
+                        baseline: baseline.hash,
+                        current: currentHash,
+                        message: `${providerKey}: hash changed since baseline`,
+                    });
+                    diff.summary.modified++;
+                }
+            } catch (err) {
+                diff.providers.push({
+                    name: providerKey,
+                    status: 'error',
+                    message: `${providerKey}: error reading binary — ${err.message}`,
+                });
+            }
+        }
+
+        // ACE self-file diff
+        const srcFiles = this._getSourceFiles(ACE_SRC_DIR);
+        const baselinedFiles = new Set(Object.keys(this.#hashDb.selfFiles));
+
+        for (const { relative, absolute } of srcFiles) {
+            try {
+                const currentHash = this.computeHashSync(absolute);
+                if (baselinedFiles.has(relative)) {
+                    const baselineHash = this.#hashDb.selfFiles[relative];
+                    if (currentHash === baselineHash) {
+                        diff.summary.unchanged++;
+                    } else {
+                        diff.selfFiles.push({ file: relative, status: 'modified' });
+                        diff.summary.modified++;
+                    }
+                    baselinedFiles.delete(relative);
+                } else {
+                    diff.selfFiles.push({ file: relative, status: 'added' });
+                    diff.summary.added++;
+                }
+            } catch {
+                // Skip unreadable files
+            }
+        }
+
+        // Files in baseline but no longer on disk
+        for (const file of baselinedFiles) {
+            diff.selfFiles.push({ file, status: 'removed' });
+            diff.summary.removed++;
+        }
+
+        return diff;
+    }
+
+    /**
+     * Verify integrity of a specific plugin file against an expected hash.
+     * @param {string} filepath - Absolute path to the plugin file
+     * @param {string} expectedHash - Expected SHA-256 hash
+     * @returns {{ status: string, file: string, message: string }}
+     */
+    verifyPlugin(filepath, expectedHash) {
+        if (!existsSync(filepath)) {
+            return { status: 'not_found', file: filepath, message: `Plugin not found: ${filepath}` };
+        }
+        try {
+            const currentHash = this.computeHashSync(filepath);
+            if (currentHash === expectedHash) {
+                return { status: 'ok', file: filepath, message: `✔ Plugin integrity verified` };
+            }
+            this.#audit?.log({
+                type: 'PLUGIN_INTEGRITY_MISMATCH',
+                details: { filepath, expected: expectedHash.substring(0, 16) + '...', actual: currentHash.substring(0, 16) + '...' },
+            });
+            return { status: 'mismatch', file: filepath, message: `⚠ Plugin hash mismatch — file may have been modified!` };
+        } catch (err) {
+            return { status: 'error', file: filepath, message: `Error verifying plugin: ${err.message}` };
+        }
+    }
 }
 
 // Export for testing
