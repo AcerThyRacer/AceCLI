@@ -6,12 +6,13 @@
 //  - Automatic baseline on first run
 // ============================================================
 import { createHash } from 'crypto';
-import { createReadStream, existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { join, dirname, resolve as pathResolve } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { Encryption } from './encryption.js';
+import { writeSecureFile } from './fs-utils.js';
 
 const IS_WIN = process.platform === 'win32';
 const INTEGRITY_FILE = join(homedir(), '.ace', 'integrity.enc');
@@ -31,6 +32,22 @@ const PROVIDER_COMMANDS = {
     interpreter: 'interpreter',
     sgpt: 'sgpt',
 };
+
+function normalizePath(filePath) {
+    const resolved = pathResolve(filePath);
+    if (existsSync(resolved)) return resolved;
+
+    if (
+        process.platform !== 'win32' &&
+        typeof filePath === 'string' &&
+        !filePath.startsWith('/') &&
+        existsSync(`/${filePath}`)
+    ) {
+        return `/${filePath}`;
+    }
+
+    return resolved;
+}
 
 /**
  * IntegrityChecker — Supply chain security for AI CLI tools.
@@ -70,16 +87,17 @@ export class IntegrityChecker {
      * @returns {Promise<string>} Hex-encoded SHA-256 hash
      */
     async computeHash(filePath) {
-        return new Promise((resolve, reject) => {
-            if (!existsSync(filePath)) {
+        return new Promise((promiseResolve, reject) => {
+            const normalizedPath = normalizePath(filePath);
+            if (!existsSync(normalizedPath)) {
                 return reject(new Error(`File not found: ${filePath}`));
             }
 
             const hash = createHash('sha256');
-            const stream = createReadStream(filePath);
+            const stream = createReadStream(normalizedPath);
 
             stream.on('data', (chunk) => hash.update(chunk));
-            stream.on('end', () => resolve(hash.digest('hex')));
+            stream.on('end', () => promiseResolve(hash.digest('hex')));
             stream.on('error', reject);
         });
     }
@@ -90,7 +108,8 @@ export class IntegrityChecker {
      * @returns {string} Hex-encoded SHA-256 hash
      */
     computeHashSync(filePath) {
-        const data = readFileSync(filePath);
+        const normalizedPath = normalizePath(filePath);
+        const data = readFileSync(normalizedPath);
         return createHash('sha256').update(data).digest('hex');
     }
 
@@ -408,7 +427,7 @@ export class IntegrityChecker {
         if (!this.#encryption) return;
         try {
             const encrypted = this.#encryption.encryptJSON(this.#hashDb);
-            writeFileSync(INTEGRITY_FILE, encrypted, 'utf8');
+            writeSecureFile(INTEGRITY_FILE, encrypted, 'utf8');
         } catch {
             // Silent fail — don't crash on save error
         }

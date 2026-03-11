@@ -19,7 +19,7 @@ export class CopilotProvider extends BaseProvider {
   async _run(prompt, options) {
     const subcommand = options.subcommand || 'explain';
     const args = ['copilot', subcommand, prompt];
-    return super._run(prompt, { ...options, args });
+    return super._run(prompt, { ...options, args, promptProvidedInArgs: true });
   }
 
   getInfo() {

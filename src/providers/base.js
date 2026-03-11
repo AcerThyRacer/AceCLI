@@ -325,6 +325,8 @@ export class BaseProvider {
       if (this.promptMode === 'stdin') {
         // Secure: pass prompt via stdin (not visible in ps/process listing)
         args = [...this.args, ...(options.args || [])];
+      } else if (options.promptProvidedInArgs) {
+        args = [...this.args, ...(options.args || [])];
       } else {
         // Legacy: pass prompt as command line argument
         args = [...this.args, ...(options.args || []), prompt];

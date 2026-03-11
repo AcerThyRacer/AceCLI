@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================
 #  AceCLI Installer for Linux/macOS
-#  Usage: curl -fsSL <url> | bash
-#     or: chmod +x install.sh && ./install.sh
+#  Usage: curl -fsSLO <url>
+#         review install.sh
+#         bash install.sh
 # ============================================================
 set -e
 

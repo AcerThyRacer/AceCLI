@@ -2,11 +2,12 @@
 //  AceCLI – Conversation Manager (Encrypted Persistence)
 //  Multi-turn conversation threads with encrypted storage
 // ============================================================
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { Encryption } from './security/encryption.js';
+import { ensureSecureDir, writeSecureFile } from './security/fs-utils.js';
 
 const CONV_DIR = join(homedir(), '.ace', 'conversations');
 const INDEX_FILE = join(CONV_DIR, 'index.enc');
@@ -20,9 +21,7 @@ export class ConversationManager {
         this.audit = options.audit || null;
 
         // Ensure directory exists
-        if (!existsSync(CONV_DIR)) {
-            mkdirSync(CONV_DIR, { recursive: true });
-        }
+        ensureSecureDir(CONV_DIR);
 
         // Load index on init
         this._loadIndex();
@@ -172,7 +171,7 @@ export class ConversationManager {
             const data = JSON.stringify(thread);
             const encrypted = this.encryption.encrypt(data);
             const filepath = join(CONV_DIR, `${threadId}.enc`);
-            writeFileSync(filepath, encrypted, 'utf8');
+            writeSecureFile(filepath, encrypted, 'utf8');
             this._saveIndex();
             return true;
         } catch (err) {
@@ -227,7 +226,7 @@ export class ConversationManager {
             }
             const data = JSON.stringify(index);
             const encrypted = this.encryption.encrypt(data);
-            writeFileSync(INDEX_FILE, encrypted, 'utf8');
+            writeSecureFile(INDEX_FILE, encrypted, 'utf8');
         } catch (err) {
             this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'saveIndex', error: err.message } });
         }

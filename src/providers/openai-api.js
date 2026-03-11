@@ -3,6 +3,7 @@
 // ============================================================
 import { ApiProvider } from './api-base.js';
 import chalk from 'chalk';
+import { Sanitizer } from '../security/sanitizer.js';
 
 export class OpenAIApiProvider extends ApiProvider {
     constructor(options = {}) {
@@ -57,8 +58,8 @@ export class OpenAIApiProvider extends ApiProvider {
             let col = 2;
 
             const output = await this._streamSSE(res, (token) => {
-                // Word-wrap at ~80 cols
-                for (const char of token) {
+                const safeToken = Sanitizer.sanitizeTerminalOutput(token);
+                for (const char of safeToken) {
                     if (char === '\n') {
                         process.stdout.write('\n  ');
                         col = 2;

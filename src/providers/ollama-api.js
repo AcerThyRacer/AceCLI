@@ -3,6 +3,7 @@
 // ============================================================
 import { ApiProvider } from './api-base.js';
 import chalk from 'chalk';
+import { Sanitizer } from '../security/sanitizer.js';
 
 export class OllamaApiProvider extends ApiProvider {
     constructor(options = {}) {
@@ -79,7 +80,8 @@ export class OllamaApiProvider extends ApiProvider {
 
             // Ollama uses NDJSON, not SSE
             const output = await this._streamNDJSON(res, (token) => {
-                for (const char of token) {
+                const safeToken = Sanitizer.sanitizeTerminalOutput(token);
+                for (const char of safeToken) {
                     if (char === '\n') {
                         process.stdout.write('\n  ');
                         col = 2;

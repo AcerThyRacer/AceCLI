@@ -19,7 +19,7 @@ export class OllamaProvider extends BaseProvider {
 
   async _run(prompt, options) {
     const args = ['run', options.model || this.model, prompt];
-    return super._run(prompt, { ...options, args });
+    return super._run(prompt, { ...options, args, promptProvidedInArgs: true });
   }
 
   async listModels() {

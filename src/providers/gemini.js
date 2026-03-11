@@ -21,7 +21,7 @@ export class GeminiProvider extends BaseProvider {
 
   async _run(prompt, options) {
     const args = [prompt];
-    return super._run(prompt, { ...options, args });
+    return super._run(prompt, { ...options, args, promptProvidedInArgs: true });
   }
 
   getInfo() {

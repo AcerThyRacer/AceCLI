@@ -18,7 +18,7 @@ ACE wraps major AI CLIs (OpenAI, Claude, Gemini, GitHub Copilot, Ollama) with a 
 - **[Git](https://git-scm.com)**
 - **npm** (comes with Node.js)
 
-### 🐧 Linux / macOS (One-Liner)
+### 🐧 Linux / macOS (Recommended)
 
 ```bash
 git clone https://github.com/AcerThyRacer/AceCLI.git ~/.acecli && cd ~/.acecli && npm install && npm link
@@ -27,7 +27,9 @@ git clone https://github.com/AcerThyRacer/AceCLI.git ~/.acecli && cd ~/.acecli &
 Or use the install script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AcerThyRacer/AceCLI/main/install.sh | bash
+curl -fsSLO https://raw.githubusercontent.com/AcerThyRacer/AceCLI/main/install.sh
+less install.sh
+bash install.sh
 ```
 
 <details>
@@ -177,7 +179,7 @@ ace (bin entry)
 │   │   ├── copilot.js        GitHub Copilot CLI wrapper
 │   │   └── ollama.js         Ollama wrapper
 │   ├── plugins/
-│   │   └── plugin-manager.js Sandboxed plugin loader
+│   │   └── plugin-manager.js Trusted plugin loader
 │   └── ui/
 │       ├── banner.js         ASCII art & animation
 │       ├── menu.js           Interactive menus
@@ -202,7 +204,7 @@ ace (bin entry)
 
 ## 🔌 Plugin System
 
-Add custom providers via the sandboxed `PluginManager`:
+Add custom providers via the `PluginManager`:
 
 ```js
 import { ProviderRegistry } from './src/providers/registry.js';
@@ -210,7 +212,7 @@ const registry = new ProviderRegistry();
 await registry.loadPlugin('my-provider', './path/to/my-provider.js');
 ```
 
-Plugins run in a sandboxed context with no access to encryption keys, vault contents, or internal config.
+Plugins are disabled by default. If enabled, only explicitly trusted plugin filenames with pinned SHA-256 hashes are allowed to load.
 
 ---
 

@@ -1,15 +1,17 @@
 // ============================================================
 //  AceCLI – Plugin Manager
 //  Auto-discovers and manages provider plugins from ~/.ace/plugins/
-//  - Sandboxed context: plugins CANNOT access encryption, config, or vault
+//  - Restricted helper context for trusted plugins
 //  - File path validation to prevent directory traversal
 //  - Audit logging for all plugin lifecycle events
 // ============================================================
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, normalize } from 'path';
 import { homedir } from 'os';
 import { pathToFileURL } from 'url';
 import chalk from 'chalk';
+import { ensureSecureDir } from '../security/fs-utils.js';
 
 const PLUGINS_DIR = join(homedir(), '.ace', 'plugins');
 
@@ -24,9 +26,8 @@ function isValidPluginFilename(filename) {
     return normalized === filename && !normalized.includes('..');
 }
 
-// Build a sandboxed context that exposes only safe methods to plugins.
-// Plugins CANNOT access encryption keys, vault contents, config internals,
-// or security module internals.
+// Build a restricted helper context for trusted plugins.
+// This is not a VM sandbox; it only narrows the explicit helper surface.
 function buildSandboxedCtx(ctx) {
     if (!ctx) return null;
 
@@ -62,12 +63,16 @@ export class PluginManager {
         this.audit = options.audit || null;
         this.ctx = options.ctx || null;
         this._sandboxedCtx = null;
+        this.enabled = options.enabled === true;
+        this.autoLoadEnabled = options.autoLoad === true;
+        this.requireIntegrity = options.requireIntegrity !== false;
+        this.allowedPlugins = options.allowedPlugins || {};
 
         // Ensure plugins directory exists
-        mkdirSync(PLUGINS_DIR, { recursive: true });
+        ensureSecureDir(PLUGINS_DIR);
     }
 
-    // Lazily build sandboxed context
+    // Lazily build restricted helper context
     _getSandboxedCtx() {
         if (!this._sandboxedCtx && this.ctx) {
             this._sandboxedCtx = buildSandboxedCtx(this.ctx);
@@ -81,6 +86,7 @@ export class PluginManager {
      */
     discover() {
         try {
+            if (!this.enabled || !this.autoLoadEnabled) return [];
             if (!existsSync(PLUGINS_DIR)) return [];
 
             const files = readdirSync(PLUGINS_DIR)
@@ -143,7 +149,7 @@ export class PluginManager {
 
     /**
      * Load a plugin by filename from the plugins directory.
-     * Plugins receive a SANDBOXED context — no access to encryption, vault, or config.
+     * Plugins receive a restricted helper context after trust and integrity checks.
      * @param {string} filename - The .js filename to load
      * @returns {Promise<{success: boolean, name?: string, error?: string}>}
      */
@@ -155,6 +161,10 @@ export class PluginManager {
                 details: { filename, reason: 'Invalid filename (possible path traversal)' },
             });
             return { success: false, error: `Invalid plugin filename: ${filename}` };
+        }
+
+        if (!this.enabled) {
+            return { success: false, error: 'Plugin loading is disabled by policy' };
         }
 
         const filepath = join(PLUGINS_DIR, filename);
@@ -175,6 +185,20 @@ export class PluginManager {
         }
 
         try {
+            const expectedHash = this.allowedPlugins[filename];
+            if (!expectedHash) {
+                return { success: false, error: `Plugin not trusted: ${filename}` };
+            }
+
+            const fileHash = createHash('sha256').update(readFileSync(filepath)).digest('hex');
+            if (this.requireIntegrity && fileHash !== expectedHash) {
+                this.audit?.log({
+                    type: 'PLUGIN_LOAD_BLOCKED',
+                    details: { filename, reason: 'Integrity mismatch', expectedHash, actualHash: fileHash },
+                });
+                return { success: false, error: `Plugin integrity check failed for ${filename}` };
+            }
+
             // Dynamic ESM import
             const fileUrl = pathToFileURL(filepath).href;
             const module = await import(fileUrl);
@@ -189,7 +213,7 @@ export class PluginManager {
             const PluginClass = module.default || module.Provider || module.Plugin;
             const instance = typeof PluginClass === 'function' ? new PluginClass() : PluginClass;
 
-            // Initialize with SANDBOXED context — plugins cannot access secrets
+        // Initialize with restricted helper context for trusted plugins
             if (typeof instance.init === 'function') {
                 const safeCtx = this._getSandboxedCtx();
                 await instance.init(safeCtx);
@@ -324,7 +348,7 @@ export class PluginManager {
         }
 
         const lines = [
-            chalk.green(`  🔌 Plugins: ${plugins.length} loaded [sandboxed]`),
+            chalk.green(`  🔌 Plugins: ${plugins.length} loaded [trusted + pinned]`),
             ...plugins.map((p) =>
                 chalk.gray(`     • ${p.name} (${p.info.version || 'v?'}) — ${p.status}`)
             ),

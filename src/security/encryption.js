@@ -143,17 +143,18 @@ export class Encryption {
       // Pass 1: overwrite with 0xAA pattern
       buffer.fill(0xAA);
       // Read-back barrier: force V8 to materialize the write
-      /* eslint-disable no-unused-expressions */
-      buffer[0]; buffer[buffer.length - 1];
+      void buffer[0];
+      void buffer[buffer.length - 1];
 
       // Pass 2: overwrite with random data
       randomBytes(buffer.length).copy(buffer);
-      buffer[0]; buffer[buffer.length - 1];
+      void buffer[0];
+      void buffer[buffer.length - 1];
 
       // Pass 3: zero out
       buffer.fill(0);
-      buffer[0]; buffer[buffer.length - 1];
-      /* eslint-enable no-unused-expressions */
+      void buffer[0];
+      void buffer[buffer.length - 1];
     }
   }
 

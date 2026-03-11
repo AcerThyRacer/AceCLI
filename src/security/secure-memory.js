@@ -118,17 +118,18 @@ export class SecureBuffer {
             // Pass 1: Overwrite with 0xAA pattern
             this.#buffer.fill(0xAA);
             // Read-back barrier: force V8 to materialize the write
-            /* eslint-disable no-unused-expressions */
-            this.#buffer[0]; this.#buffer[this.#buffer.length - 1];
+            void this.#buffer[0];
+            void this.#buffer[this.#buffer.length - 1];
 
             // Pass 2: Overwrite with cryptographic random data
             randomBytes(this.#buffer.length).copy(this.#buffer);
-            this.#buffer[0]; this.#buffer[this.#buffer.length - 1];
+            void this.#buffer[0];
+            void this.#buffer[this.#buffer.length - 1];
 
             // Pass 3: Zero out
             this.#buffer.fill(0);
-            this.#buffer[0]; this.#buffer[this.#buffer.length - 1];
-            /* eslint-enable no-unused-expressions */
+            void this.#buffer[0];
+            void this.#buffer[this.#buffer.length - 1];
         }
 
         this.#wiped = true;

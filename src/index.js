@@ -6,7 +6,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
 import gradient from 'gradient-string';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -18,6 +18,7 @@ import { ConversationManager } from './conversations.js';
 import { showDashboard, showAuditLog } from './ui/dashboard.js';
 import { ConfigManager } from './config.js';
 import { Sanitizer } from './security/sanitizer.js';
+import { AuthManager, MIN_MASTER_PASSWORD_LENGTH } from './security/auth.js';
 import { Encryption } from './security/encryption.js';
 import { FingerprintMask } from './security/fingerprint.js';
 import { ProxyRouter } from './security/proxy.js';
@@ -34,6 +35,7 @@ import { PluginManager } from './plugins/plugin-manager.js';
 import { ResponseRenderer } from './ui/renderer.js';
 import { runDoctor } from './doctor.js';
 import { classifyError } from './errors.js';
+import { writeSecureFile } from './security/fs-utils.js';
 
 const g = gradient(['#00ff88', '#00ccff']);
 
@@ -77,82 +79,80 @@ process.on('SIGINT', () => {
   }
 });
 
-// Password hash file for persistent login
-import { existsSync as _existsSync, readFileSync as _readFileSync, writeFileSync as _writeFileSync, mkdirSync as _mkdirSync } from 'fs';
-const _ACE_DIR = join(homedir(), '.ace');
-const PASSWORD_HASH_FILE = join(_ACE_DIR, 'password.hash');
-
-function _savePasswordHash(password) {
-  if (!_existsSync(_ACE_DIR)) _mkdirSync(_ACE_DIR, { recursive: true });
-  const salt = randomBytes(32).toString('hex');
-  const hash = createHash('sha256').update(salt + password).digest('hex');
-  _writeFileSync(PASSWORD_HASH_FILE, JSON.stringify({ salt, hash }), 'utf8');
-}
-
-function _verifyPassword(password) {
-  if (!_existsSync(PASSWORD_HASH_FILE)) return true; // No hash = first run
-  try {
-    const { salt, hash } = JSON.parse(_readFileSync(PASSWORD_HASH_FILE, 'utf8'));
-    return createHash('sha256').update(salt + password).digest('hex') === hash;
-  } catch { return false; }
-}
-
-const _isFirstRun = () => !_existsSync(PASSWORD_HASH_FILE);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function initSession() {
   console.log();
 
   let password;
+  const auth = new AuthManager();
 
-  const CONFIG_EXISTS = _existsSync(join(homedir(), '.ace', 'config.enc'));
+  if (auth.hasAuth()) {
+    let verified = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 10;
 
-  if (_isFirstRun() && CONFIG_EXISTS) {
-    // Migration: config exists from a previous session but no hash file yet
-    console.log(chalk.cyan('  🔄 Migrating to persistent login — enter your existing password.\n'));
-    const { pass } = await inquirer.prompt([{
-      type: 'password', name: 'pass',
-      message: chalk.cyan('Enter master password:'),
-      prefix: '  🔐', mask: '•',
-      validate: (v) => v.length >= 4 || 'Minimum 4 characters',
-    }]);
-    password = pass;
-    _savePasswordHash(password);
-    console.log(chalk.green('  ✔ Password hash saved for future sessions.\n'));
-  } else if (_isFirstRun()) {
-    // True first run — create a new password
+    while (!verified && attempts < MAX_ATTEMPTS) {
+      const { pass } = await inquirer.prompt([{
+        type: 'password', name: 'pass',
+        message: chalk.cyan('Enter master password:'),
+        prefix: '  🔐', mask: '•',
+        validate: (v) => v.length > 0 || 'Password is required',
+      }]);
+
+      if (auth.verifyPassword(pass)) {
+        password = pass;
+        verified = true;
+      } else {
+        attempts++;
+        const backoffMs = Math.min(15000, 1000 * (2 ** Math.min(attempts, 4)));
+        console.log(chalk.red(`  ✗ Incorrect password. Backing off for ${Math.ceil(backoffMs / 1000)}s.`));
+        await sleep(backoffMs);
+      }
+    }
+
+    if (!verified) {
+      console.log(chalk.red('\n  ✗ Too many failed password attempts. Access denied.\n'));
+      process.exit(1);
+    }
+  } else if (auth.hasLegacyHash() || auth.hasExistingEncryptedState()) {
+    console.log(chalk.cyan('  🔄 Migrating to hardened authentication — verify your existing password.\n'));
+
+    let migrated = false;
+    while (!migrated) {
+      const { pass } = await inquirer.prompt([{
+        type: 'password', name: 'pass',
+        message: chalk.cyan('Enter existing master password:'),
+        prefix: '  🔐', mask: '•',
+        validate: (v) => v.length >= 4 || 'Minimum 4 characters',
+      }]);
+
+      if (auth.migrateLegacyOrExistingState(pass)) {
+        password = pass;
+        migrated = true;
+        console.log(chalk.green('  ✔ Hardened auth sentinel created.\n'));
+      } else {
+        console.log(chalk.red('  ✗ Password did not unlock existing encrypted data. Try again.'));
+      }
+    }
+  } else {
     console.log(chalk.cyan('  🆕 First run — create a master password.\n'));
     const { newPass } = await inquirer.prompt([{
       type: 'password', name: 'newPass',
       message: chalk.cyan('Create master password:'),
       prefix: '  🔐', mask: '•',
-      validate: (v) => v.length >= 4 || 'Minimum 4 characters',
+      validate: (v) => v.length >= MIN_MASTER_PASSWORD_LENGTH
+        || `Minimum ${MIN_MASTER_PASSWORD_LENGTH} characters`,
     }]);
-    const { confirm } = await inquirer.prompt([{
+    await inquirer.prompt([{
       type: 'password', name: 'confirm',
       message: chalk.cyan('Confirm password:'),
       prefix: '  🔐', mask: '•',
       validate: (v) => v === newPass || 'Passwords do not match',
     }]);
     password = newPass;
-    _savePasswordHash(password);
-    console.log(chalk.green('  ✔ Password saved.\n'));
-  } else {
-    // Returning user — verify password
-    let verified = false;
-    while (!verified) {
-      const { pass } = await inquirer.prompt([{
-        type: 'password', name: 'pass',
-        message: chalk.cyan('Enter master password:'),
-        prefix: '  🔐', mask: '•',
-        validate: (v) => v.length >= 4 || 'Minimum 4 characters',
-      }]);
-      if (_verifyPassword(pass)) {
-        password = pass;
-        verified = true;
-      } else {
-        console.log(chalk.red('  ✗ Incorrect password. Try again.'));
-      }
-    }
+    auth.writeIfMissing(password);
+    console.log(chalk.green('  ✔ Hardened auth sentinel created.\n'));
   }
 
   // ── MFA Check (if enabled) ──────────────────────────────
@@ -290,7 +290,13 @@ async function initSession() {
   const providers = registry.createAll(providerOpts, providerConfigs);
 
   // Auto-discover and load plugins
-  const pluginManager = new PluginManager({ audit });
+  const pluginManager = new PluginManager({
+    audit,
+    enabled: config.get('plugins.enabled'),
+    autoLoad: config.get('plugins.autoLoad'),
+    requireIntegrity: config.get('plugins.requireIntegrity'),
+    allowedPlugins: config.get('plugins.allowed') || {},
+  });
   const pluginResult = await pluginManager.autoLoad();
   const pluginProviders = pluginManager.getProviderMap();
 
@@ -337,8 +343,8 @@ async function initSession() {
   // Run integrity check and auto-baseline on launch if enabled
   if (config.get('integrity.checkOnLaunch') && config.get('integrity.enabled')) {
     try {
-      // Auto-baseline if no self files tracked yet
-      if (integrityChecker.getStatus().selfFileCount === 0) {
+      // Only allow trust-on-first-use if explicitly enabled.
+      if (config.get('integrity.autoBaseline') && integrityChecker.getStatus().selfFileCount === 0) {
         integrityChecker.recordSelfBaseline();
       }
       const selfCheck = integrityChecker.verifySelfIntegrity();
@@ -636,9 +642,8 @@ async function manageConversations() {
       const exported = ctx.conversations.exportThread(threadId, format);
       if (exported) {
         const ext = format === 'markdown' ? 'md' : 'json';
-        const { writeFileSync } = await import('fs');
         const filepath = join(homedir(), '.ace', `${threadId}.${ext}`);
-        writeFileSync(filepath, exported, 'utf8');
+        writeSecureFile(filepath, exported, 'utf8');
         console.log(chalk.green(`\n  ✔ Exported to: ${filepath}\n`));
       } else {
         console.log(chalk.red('  ✗ Export failed'));
@@ -1385,7 +1390,7 @@ async function manageIntegrity() {
 
       case 'verify-all': {
         const spinner = ora({ text: 'Verifying provider binaries...', prefixText: '  ', spinner: 'dots' }).start();
-        const { results, summary } = await ctx.integrityChecker.verifyAll(true);
+        const { results, summary } = await ctx.integrityChecker.verifyAll(false);
         spinner.stop();
 
         console.log();
@@ -1500,7 +1505,10 @@ async function killSwitch() {
   ctx.audit.log({ type: 'KILL_SWITCH_ACTIVATED' });
 
   // Wipe everything
+  new AuthManager().wipeAll();
   ctx.config.wipeAll();
+  ctx.audit.wipeAll();
+  ctx.integrityChecker.clearBaselines();
   ctx.recovery.wipeAll();
   ctx.conversations.wipeAll();
   await ctx.clipboard.clear();
@@ -1513,6 +1521,7 @@ async function killSwitch() {
 // ── Change master password ──────────────────────────────────
 async function changePassword() {
   console.log(chalk.cyan('\n  🔐 Change Master Password\n'));
+  const auth = new AuthManager();
 
   // Step 1: Verify current password
   const { currentPass } = await inquirer.prompt([{
@@ -1521,7 +1530,7 @@ async function changePassword() {
     prefix: '  🔐', mask: '•',
   }]);
 
-  if (!_verifyPassword(currentPass)) {
+  if (!auth.verifyPassword(currentPass)) {
     console.log(chalk.red('\n  ✗ Incorrect password. Password change cancelled.\n'));
     ctx.audit.log({ type: 'PASSWORD_CHANGE_FAILED', details: { reason: 'verification_failed' } });
     return;
@@ -1532,7 +1541,8 @@ async function changePassword() {
     type: 'password', name: 'newPass',
     message: chalk.cyan('New password:'),
     prefix: '  🔐', mask: '•',
-    validate: (v) => v.length >= 4 || 'Minimum 4 characters',
+    validate: (v) => v.length >= MIN_MASTER_PASSWORD_LENGTH
+      || `Minimum ${MIN_MASTER_PASSWORD_LENGTH} characters`,
   }]);
 
   const { confirmPass } = await inquirer.prompt([{
@@ -1548,12 +1558,14 @@ async function changePassword() {
     // Re-encrypt config and vault with new password
     ctx.config.changePassword(currentPass, newPass);
 
-    // Update stored hash
-    _savePasswordHash(newPass);
+    // Rotate hardened auth sentinel
+    auth.createAuthSentinel(newPass);
 
     spinner.succeed('Password changed successfully');
     console.log(chalk.green('  ✔ Config and vault re-encrypted with new password.\n'));
     ctx.audit.log({ type: 'PASSWORD_CHANGED' });
+    console.log(chalk.yellow('  Session will now close so all modules restart on the new key material.\n'));
+    gracefulShutdown();
   } catch (err) {
     spinner.fail('Password change failed');
     console.log(chalk.red(`  ✗ Error: ${err.message}\n`));
@@ -1562,24 +1574,24 @@ async function changePassword() {
 }
 // ── Install AI CLI Tools ────────────────────────────────────
 async function installAiClis() {
-  const { execSync } = await import('child_process');
+  const { execSync, spawnSync } = await import('child_process');
 
   // Comprehensive list of AI CLI tools
   const AI_TOOLS = [
-    { name: 'Gemini CLI', key: 'gemini', cmd: 'gemini', install: 'npm install -g @google/gemini-cli', desc: 'Google Gemini AI in your terminal' },
-    { name: 'Claude Code', key: 'claude', cmd: 'claude', install: 'npm install -g @anthropic-ai/claude-code', desc: 'Anthropic Claude agentic coding' },
-    { name: 'OpenAI Codex CLI', key: 'codex', cmd: 'codex', install: 'npm install -g @openai/codex', desc: 'OpenAI Codex coding agent' },
-    { name: 'GitHub Copilot CLI', key: 'copilot', cmd: 'gh', install: 'gh extension install github/gh-copilot', desc: 'AI pair programmer in terminal' },
+    { name: 'Gemini CLI', key: 'gemini', cmd: 'gemini', install: ['npm', ['install', '-g', '@google/gemini-cli']], desc: 'Google Gemini AI in your terminal' },
+    { name: 'Claude Code', key: 'claude', cmd: 'claude', install: ['npm', ['install', '-g', '@anthropic-ai/claude-code']], desc: 'Anthropic Claude agentic coding' },
+    { name: 'OpenAI Codex CLI', key: 'codex', cmd: 'codex', install: ['npm', ['install', '-g', '@openai/codex']], desc: 'OpenAI Codex coding agent' },
+    { name: 'GitHub Copilot CLI', key: 'copilot', cmd: 'gh', install: ['gh', ['extension', 'install', 'github/gh-copilot']], desc: 'AI pair programmer in terminal' },
     { name: 'Ollama', key: 'ollama', cmd: 'ollama', install: null, desc: 'Local LLMs — download from ollama.com' },
-    { name: 'Aider', key: 'aider', cmd: 'aider', install: 'pip install aider-chat', desc: 'AI pair programming tool' },
-    { name: 'Open Interpreter', key: 'interpreter', cmd: 'interpreter', install: 'pip install open-interpreter', desc: 'Natural language computer control' },
-    { name: 'ShellGPT', key: 'sgpt', cmd: 'sgpt', install: 'pip install shell-gpt', desc: 'ChatGPT in your terminal' },
-    { name: 'Cline CLI', key: 'cline', cmd: 'cline', install: 'npm install -g cline', desc: 'AI coding partner for CLI' },
-    { name: 'AI SDK (Vercel)', key: 'ai-sdk', cmd: 'ai', install: 'npm install -g ai', desc: 'Vercel AI SDK CLI' },
-    { name: 'LLM (Simon Willison)', key: 'llm', cmd: 'llm', install: 'pip install llm', desc: 'CLI for many LLM providers' },
-    { name: 'Mods', key: 'mods', cmd: 'mods', install: 'go install github.com/charmbracelet/mods@latest', desc: 'AI in the command line (Go)' },
-    { name: 'tgpt', key: 'tgpt', cmd: 'tgpt', install: 'npm install -g tgpt', desc: 'ChatGPT in terminal without API key' },
-    { name: 'Claude CMD', key: 'claude-cmd', cmd: 'claude-cmd', install: 'npm install -g claude-cmd', desc: 'Claude AI CLI with agent mode' },
+    { name: 'Aider', key: 'aider', cmd: 'aider', install: ['pip', ['install', 'aider-chat']], desc: 'AI pair programming tool' },
+    { name: 'Open Interpreter', key: 'interpreter', cmd: 'interpreter', install: ['pip', ['install', 'open-interpreter']], desc: 'Natural language computer control' },
+    { name: 'ShellGPT', key: 'sgpt', cmd: 'sgpt', install: ['pip', ['install', 'shell-gpt']], desc: 'ChatGPT in your terminal' },
+    { name: 'Cline CLI', key: 'cline', cmd: 'cline', install: ['npm', ['install', '-g', 'cline']], desc: 'AI coding partner for CLI' },
+    { name: 'AI SDK (Vercel)', key: 'ai-sdk', cmd: 'ai', install: ['npm', ['install', '-g', 'ai']], desc: 'Vercel AI SDK CLI' },
+    { name: 'LLM (Simon Willison)', key: 'llm', cmd: 'llm', install: ['pip', ['install', 'llm']], desc: 'CLI for many LLM providers' },
+    { name: 'Mods', key: 'mods', cmd: 'mods', install: ['go', ['install', 'github.com/charmbracelet/mods@latest']], desc: 'AI in the command line (Go)' },
+    { name: 'tgpt', key: 'tgpt', cmd: 'tgpt', install: ['npm', ['install', '-g', 'tgpt']], desc: 'ChatGPT in terminal without API key' },
+    { name: 'Claude CMD', key: 'claude-cmd', cmd: 'claude-cmd', install: ['npm', ['install', '-g', 'claude-cmd']], desc: 'Claude AI CLI with agent mode' },
   ];
 
   // Check which are installed
@@ -1641,7 +1653,9 @@ async function installAiClis() {
   const { confirm } = await inquirer.prompt([{
     type: 'confirm',
     name: 'confirm',
-    message: chalk.yellow(`Install ${selected.name}? Command: ${selected.install}`),
+    message: chalk.yellow(
+      `Install ${selected.name}? Command: ${selected.install[0]} ${selected.install[1].join(' ')}`
+    ),
     prefix: '  ⚠',
     default: true,
   }]);
@@ -1651,12 +1665,18 @@ async function installAiClis() {
   console.log(chalk.yellow(`\n  → Installing ${selected.name}...\n`));
 
   try {
-    execSync(selected.install, { stdio: 'inherit', shell: true });
+    const result = spawnSync(selected.install[0], selected.install[1], { stdio: 'inherit' });
+    if (result.status !== 0) {
+      throw new Error(`${selected.install[0]} exited with status ${result.status ?? 'unknown'}`);
+    }
     console.log(chalk.green(`\n  ✓ ${selected.name} installed successfully!\n`));
-    ctx.audit.log({ type: 'AI_TOOL_INSTALLED', details: { tool: selected.name, command: selected.install } });
+    ctx.audit.log({
+      type: 'AI_TOOL_INSTALLED',
+      details: { tool: selected.name, command: `${selected.install[0]} ${selected.install[1].join(' ')}` },
+    });
   } catch (err) {
     console.log(chalk.red(`\n  ✗ Installation failed: ${err.message}`));
-    console.log(chalk.yellow(`  Try running manually: ${selected.install}\n`));
+    console.log(chalk.yellow(`  Try running manually: ${selected.install[0]} ${selected.install[1].join(' ')}\n`));
   }
 }
 

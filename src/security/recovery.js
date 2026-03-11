@@ -1,11 +1,12 @@
 // ============================================================
 //  AceCLI – Session Recovery (Encrypted Checkpoint)
 // ============================================================
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { Encryption } from './encryption.js';
 import { randomBytes } from 'crypto';
+import { ensureSecureDir, writeSecureFile } from './fs-utils.js';
 
 const RECOVERY_DIR = join(homedir(), '.ace', 'recovery');
 
@@ -28,7 +29,7 @@ export class SessionRecovery {
     this._timer = null;
 
     if (this.enabled) {
-      mkdirSync(RECOVERY_DIR, { recursive: true });
+      ensureSecureDir(RECOVERY_DIR);
     }
   }
 
@@ -54,7 +55,7 @@ export class SessionRecovery {
       };
 
       const encrypted = this.encryption.encrypt(JSON.stringify(payload));
-      writeFileSync(this._getFilePath(), encrypted, 'utf8');
+      writeSecureFile(this._getFilePath(), encrypted, 'utf8');
       return true;
     } catch (err) {
       this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'saveCheckpoint', error: err.message } });
@@ -118,7 +119,7 @@ export class SessionRecovery {
     try {
       if (existsSync(filepath)) {
         // Overwrite with random data before delete
-        writeFileSync(filepath, randomBytes(512));
+        writeSecureFile(filepath, randomBytes(512));
         unlinkSync(filepath);
       }
       return true;
@@ -158,7 +159,7 @@ export class SessionRecovery {
       const files = readdirSync(RECOVERY_DIR).filter((f) => f.endsWith('.recovery'));
       for (const f of files) {
         const fp = join(RECOVERY_DIR, f);
-        writeFileSync(fp, randomBytes(512));
+        writeSecureFile(fp, randomBytes(512));
         unlinkSync(fp);
       }
     } catch (err) { this.audit?.log({ type: 'DEBUG_ERROR', details: { op: 'wipeAll', error: err.message } }); }

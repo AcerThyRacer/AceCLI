@@ -5,6 +5,7 @@
 //  - Version-tagged for forward compatibility
 // ============================================================
 import { Encryption } from './security/encryption.js';
+import { MIN_MASTER_PASSWORD_LENGTH } from './security/auth.js';
 
 const EXPORT_VERSION = 1;
 const EXPORT_TYPE = 'ace-config-export';
@@ -17,8 +18,8 @@ export class ConfigExport {
      * @returns {string} Encrypted export blob
      */
     static exportConfig(configManager, exportPassword) {
-        if (!exportPassword || exportPassword.length < 4) {
-            throw new Error('Export password must be at least 4 characters');
+        if (!exportPassword || exportPassword.length < MIN_MASTER_PASSWORD_LENGTH) {
+            throw new Error(`Export password must be at least ${MIN_MASTER_PASSWORD_LENGTH} characters`);
         }
 
         const enc = new Encryption(exportPassword);

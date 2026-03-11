@@ -4,11 +4,12 @@
 //  - Deep-clone default config to prevent mutation
 //  - Full key rotation: re-encrypts config, vault, conversations, recovery
 // ============================================================
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { Encryption } from './security/encryption.js';
+import { ensureSecureDir, writeSecureFile } from './security/fs-utils.js';
 
 const ACE_DIR = join(homedir(), '.ace');
 const CONFIG_FILE = join(ACE_DIR, 'config.enc');
@@ -35,8 +36,14 @@ const DEFAULT_CONFIG = {
   },
   integrity: {
     enabled: true,
-    autoBaseline: true,
+    autoBaseline: false,
     checkOnLaunch: true,
+  },
+  plugins: {
+    enabled: false,
+    autoLoad: false,
+    requireIntegrity: true,
+    allowed: {},
   },
   proxy: {
     enabled: false,
@@ -110,7 +117,7 @@ export class ConfigManager {
     this.config = cloneDefaults();
     this.vault = {};
 
-    mkdirSync(ACE_DIR, { recursive: true });
+    ensureSecureDir(ACE_DIR);
   }
 
   load() {
@@ -131,9 +138,9 @@ export class ConfigManager {
   save() {
     if (this.encryption) {
       const encrypted = this.encryption.encryptJSON(this.config);
-      writeFileSync(CONFIG_FILE, encrypted, 'utf8');
+      writeSecureFile(CONFIG_FILE, encrypted, 'utf8');
     } else {
-      writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf8');
+      writeSecureFile(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf8');
     }
   }
 
@@ -167,7 +174,7 @@ export class ConfigManager {
 
   saveVault() {
     if (!this.encryption) throw new Error('Vault requires master password');
-    writeFileSync(VAULT_FILE, this.encryption.encryptJSON(this.vault), 'utf8');
+    writeSecureFile(VAULT_FILE, this.encryption.encryptJSON(this.vault), 'utf8');
   }
 
   setApiKey(provider, key) {
@@ -253,7 +260,7 @@ export class ConfigManager {
           const decrypted = oldEnc.decrypt(raw);
           // Re-encrypt with new password
           const reEncrypted = newEnc.encrypt(decrypted);
-          writeFileSync(filepath, reEncrypted, 'utf8');
+          writeSecureFile(filepath, reEncrypted, 'utf8');
           count++;
         } catch {
           // Skip files that fail to decrypt (may be corrupted or different format)
@@ -272,16 +279,16 @@ export class ConfigManager {
       if (existsSync(CONFIG_FILE)) {
         // 3-pass overwrite: random → zeros → random → delete
         const size = readFileSync(CONFIG_FILE).length || 4096;
-        writeFileSync(CONFIG_FILE, randomBytes(Math.max(size, 4096)));
-        writeFileSync(CONFIG_FILE, Buffer.alloc(Math.max(size, 4096), 0));
-        writeFileSync(CONFIG_FILE, randomBytes(Math.max(size, 4096)));
+        writeSecureFile(CONFIG_FILE, randomBytes(Math.max(size, 4096)));
+        writeSecureFile(CONFIG_FILE, Buffer.alloc(Math.max(size, 4096), 0));
+        writeSecureFile(CONFIG_FILE, randomBytes(Math.max(size, 4096)));
         unlinkSync(CONFIG_FILE);
       }
       if (existsSync(VAULT_FILE)) {
         const size = readFileSync(VAULT_FILE).length || 4096;
-        writeFileSync(VAULT_FILE, randomBytes(Math.max(size, 4096)));
-        writeFileSync(VAULT_FILE, Buffer.alloc(Math.max(size, 4096), 0));
-        writeFileSync(VAULT_FILE, randomBytes(Math.max(size, 4096)));
+        writeSecureFile(VAULT_FILE, randomBytes(Math.max(size, 4096)));
+        writeSecureFile(VAULT_FILE, Buffer.alloc(Math.max(size, 4096), 0));
+        writeSecureFile(VAULT_FILE, randomBytes(Math.max(size, 4096)));
         unlinkSync(VAULT_FILE);
       }
     } catch { /* silent */ }

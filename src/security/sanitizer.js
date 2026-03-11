@@ -123,6 +123,9 @@ class InjectionHeuristics {
 }
 
 export class Sanitizer {
+  static TERMINAL_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)|[PX^_][\s\S]*?\u001B\\)/g;
+  static UNSAFE_CONTROL_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
     this.strictMode = options.strictMode || false;
@@ -170,6 +173,14 @@ export class Sanitizer {
     }
 
     return { text: result, redactions };
+  }
+
+  static sanitizeTerminalOutput(text) {
+    if (!text) return '';
+
+    return text
+      .replace(Sanitizer.TERMINAL_ESCAPE_PATTERN, '')
+      .replace(Sanitizer.UNSAFE_CONTROL_PATTERN, '');
   }
 
   detectInjection(text) {

@@ -1,8 +1,7 @@
 @echo off
 REM ============================================================
 REM  AceCLI Installer for Windows
-REM  Usage: Right-click → Run as Administrator
-REM     or: Open PowerShell → .\install.bat
+REM  Usage: Download, review, then run from PowerShell or CMD
 REM ============================================================
 title AceCLI Installer
 

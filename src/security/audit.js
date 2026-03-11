@@ -4,11 +4,12 @@
 //  - Encrypted persistence
 //  - Export/import functionality
 // ============================================================
-import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { Encryption } from './encryption.js';
+import { ensureSecureDir, writeSecureFile } from './fs-utils.js';
 
 const AUDIT_DIR = join(homedir(), '.ace', 'audit');
 
@@ -36,7 +37,7 @@ export class AuditLogger {
     }
 
     if (!this.ephemeral) {
-      mkdirSync(AUDIT_DIR, { recursive: true });
+      ensureSecureDir(AUDIT_DIR);
     }
   }
 
@@ -86,7 +87,7 @@ export class AuditLogger {
       }
 
       const existing = existsSync(filepath) ? readFileSync(filepath, 'utf8') : '';
-      writeFileSync(filepath, existing + line + '\n', 'utf8');
+      writeSecureFile(filepath, existing + line + '\n', 'utf8');
     } catch {
       // Silent fail – audit should never crash the app
     }
@@ -138,7 +139,7 @@ export class AuditLogger {
       try {
         const filepath = join(AUDIT_DIR, `audit_${this.sessionId}.log`);
         if (existsSync(filepath)) {
-          writeFileSync(filepath, randomBytes(1024));
+          writeSecureFile(filepath, randomBytes(1024));
           unlinkSync(filepath);
         }
       } catch { /* silent */ }
@@ -171,7 +172,7 @@ export class AuditLogger {
   // Export and write to a file
   exportToFile(filepath, format = 'json') {
     const content = this.export(format);
-    writeFileSync(filepath, content, 'utf8');
+    writeSecureFile(filepath, content, 'utf8');
     return filepath;
   }
 

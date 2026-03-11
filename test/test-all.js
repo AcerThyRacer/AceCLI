@@ -1164,7 +1164,7 @@ describe('ConfigExport', () => {
 
   it('should reject short export password', () => {
     const mockConfig = { config: {}, vault: {} };
-    assert.throws(() => ConfigExport.exportConfig(mockConfig, 'ab'), /at least 4/);
+    assert.throws(() => ConfigExport.exportConfig(mockConfig, 'ab'), /at least 12/);
   });
 });
 

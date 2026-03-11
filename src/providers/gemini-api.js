@@ -3,6 +3,7 @@
 // ============================================================
 import { ApiProvider } from './api-base.js';
 import chalk from 'chalk';
+import { Sanitizer } from '../security/sanitizer.js';
 
 export class GeminiApiProvider extends ApiProvider {
     constructor(options = {}) {
@@ -54,12 +55,13 @@ export class GeminiApiProvider extends ApiProvider {
         // Gemini uses different endpoints for streaming vs non-streaming
         const action = options.stream ? 'streamGenerateContent' : 'generateContent';
         const streamParam = options.stream ? '&alt=sse' : '';
-        const url = `${this.baseUrl}/v1beta/models/${model}:${action}?key=${apiKey}${streamParam}`;
+        const url = `${this.baseUrl}/v1beta/models/${model}:${action}?${streamParam ? 'alt=sse' : ''}`.replace(/\?$/, '');
 
         const res = await this._makeRequest(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
                 'User-Agent': 'AceCLI/1.0',
             },
         }, body);
@@ -80,7 +82,8 @@ export class GeminiApiProvider extends ApiProvider {
             let col = 2;
 
             const output = await this._streamSSE(res, (token) => {
-                for (const char of token) {
+                const safeToken = Sanitizer.sanitizeTerminalOutput(token);
+                for (const char of safeToken) {
                     if (char === '\n') {
                         process.stdout.write('\n  ');
                         col = 2;
