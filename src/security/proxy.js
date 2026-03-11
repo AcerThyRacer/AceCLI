@@ -18,6 +18,10 @@ export class ProxyRouter {
     this.tlsVerify = options.tlsVerify !== false; // Default: true
     this.agent = null;
     this.audit = options.audit || null;
+    /** When true, direct connections are refused — all traffic must go through the proxy. */
+    this.isolateMode = options.isolateMode || false;
+    /** When true, fail closed if proxy is unreachable rather than falling back to direct. */
+    this.failClosed = options.failClosed || false;
   }
 
   getProxyUrl() {
@@ -150,6 +154,8 @@ export class ProxyRouter {
       proxyType: this.proxyType,
       endpoint: this.enabled ? this.getProxyUrl() : 'none',
       tlsVerify: this.tlsVerify,
+      isolateMode: this.isolateMode,
+      failClosed: this.failClosed,
     };
   }
 
@@ -158,6 +164,27 @@ export class ProxyRouter {
       return chalk.yellow('  🌐 Proxy: DISABLED – direct connection');
     }
     const tlsTag = this.tlsVerify ? chalk.green(' [TLS✓]') : chalk.red(' [TLS✗]');
-    return chalk.green(`  🌐 Proxy: ${this.proxyType.toUpperCase()} via ${this.host}:${this.port}`) + tlsTag;
+    const isolateTag = this.isolateMode ? chalk.red(' [ISOLATED]') : '';
+    return chalk.green(`  🌐 Proxy: ${this.proxyType.toUpperCase()} via ${this.host}:${this.port}`) + tlsTag + isolateTag;
+  }
+
+  /**
+   * Enable network isolation: force all traffic through the proxy (defaults to
+   * Tor on 127.0.0.1:9050), disable direct fallback, and fail closed if the
+   * proxy is unreachable.
+   */
+  isolate() {
+    // Default to Tor if no proxy is currently configured
+    if (!this.enabled) {
+      this.host = DEFAULT_TOR_HOST;
+      this.port = DEFAULT_TOR_PORT;
+      this.proxyType = 'socks5';
+    }
+    this.enabled = true;
+    this.isolateMode = true;
+    this.failClosed = true;
+    this.agent = null; // Force agent recreation with current settings
+    this.createAgent();
+    this.audit?.log({ type: 'NET_ISOLATE_ENABLED', details: { host: this.host, port: this.port } });
   }
 }
